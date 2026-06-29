@@ -22,8 +22,9 @@ const releaseAsset = "snaphak-bundle.zip"
 
 // bundle is a ready-to-deploy overlay tree (a dist/ dir) plus its MANIFEST.sha256 file list.
 type bundle struct {
-	root  string
-	files []manifestEntry
+	root    string
+	files   []manifestEntry
+	version string // the resolved release tag (e.g. v0.1.0-beta.1), or "local"
 }
 
 type manifestEntry struct {
@@ -36,9 +37,12 @@ func acquireBundle(f flags) (*bundle, func(), error) {
 	noop := func() {}
 	if f.local != "" {
 		b, err := loadBundle(f.local)
+		if b != nil {
+			b.version = "local"
+		}
 		return b, noop, err
 	}
-	dir, cleanup, err := downloadRelease(f)
+	dir, tag, cleanup, err := downloadRelease(f)
 	if err != nil {
 		return nil, noop, err
 	}
@@ -47,6 +51,7 @@ func acquireBundle(f flags) (*bundle, func(), error) {
 		cleanup()
 		return nil, noop, err
 	}
+	b.version = tag
 	return b, cleanup, nil
 }
 
@@ -126,13 +131,13 @@ type ghAsset struct {
 
 // downloadRelease resolves the requested release (stable / --beta pre-release / --release tag), downloads
 // its snaphak-bundle.zip asset (with the token if set), and extracts it into a temp dir.
-func downloadRelease(f flags) (dir string, cleanup func(), err error) {
+func downloadRelease(f flags) (dir string, tag string, cleanup func(), err error) {
 	noop := func() {}
 	token := resolveToken(f)
 
 	rel, err := fetchRelease(f, token)
 	if err != nil {
-		return "", noop, err
+		return "", "", noop, err
 	}
 	var asset *ghAsset
 	for i := range rel.Assets {
@@ -142,24 +147,24 @@ func downloadRelease(f flags) (dir string, cleanup func(), err error) {
 		}
 	}
 	if asset == nil {
-		return "", noop, fmt.Errorf("release %s is missing its download -- it may still be publishing, so try again in a minute", rel.TagName)
+		return "", "", noop, fmt.Errorf("release %s is missing its download -- it may still be publishing, so try again in a minute", rel.TagName)
 	}
 
 	tmp, err := os.MkdirTemp("", "snaphak-bundle-")
 	if err != nil {
-		return "", noop, err
+		return "", "", noop, err
 	}
 	cleanup = func() { os.RemoveAll(tmp) }
 	zipPath := filepath.Join(tmp, releaseAsset)
 	if err := downloadAsset(asset, token, zipPath); err != nil {
 		cleanup()
-		return "", noop, err
+		return "", "", noop, err
 	}
 	if err := unzip(zipPath, tmp); err != nil {
 		cleanup()
-		return "", noop, err
+		return "", "", noop, err
 	}
-	return tmp, cleanup, nil
+	return tmp, rel.TagName, cleanup, nil
 }
 
 // fetchRelease picks: an explicit --release tag, the latest --beta pre-release, or the latest stable.

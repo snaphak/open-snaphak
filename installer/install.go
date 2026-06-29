@@ -79,7 +79,7 @@ func cmdInstall(f flags) error {
 	defer cleanup()
 
 	rec := &installRecord{
-		Version:     bundleVersion(f),
+		Version:     b.version,
 		DoomPath:    doom,
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -237,17 +237,5 @@ func removeIfEmpty(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err == nil && len(entries) == 0 {
 		os.Remove(dir)
-	}
-}
-
-// bundleVersion derives a label for the install record: the release tag, "local", or the installer's version.
-func bundleVersion(f flags) string {
-	switch {
-	case f.release != "":
-		return f.release
-	case f.local != "":
-		return "local"
-	default:
-		return version
 	}
 }
