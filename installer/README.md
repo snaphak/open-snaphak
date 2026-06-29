@@ -13,13 +13,18 @@ go build -ldflags "-X main.version=v1.2.3" -o snaphak.exe .   # stamp a release 
 ## Use
 
 ```
-snaphak install   [--doom <path>] [--local <dist-dir>] [--release <tag>] [--beta]
-snaphak update    [--doom <path>] [--release <tag>] [--beta]
-snaphak uninstall [--doom <path>]
+snaphak install   [--doom <path>] [--local <dist-dir>] [--release <tag>] [--beta] [--yes]
+snaphak update    [--doom <path>] [--release <tag>] [--beta] [--yes]
+snaphak uninstall [--doom <path>] [--yes]
+snaphak changelog
 snaphak status
 snaphak version
 snaphak help
 ```
+
+`install` / `update` / `uninstall` ask for a final **"are you sure?"** confirmation (after all checks pass);
+`--yes` / `-y` skips it for scripts. **`snaphak changelog`** prints the published version history + notes
+(it lives in the GitHub Releases — CI auto-generates each release's notes from the commits since the last tag).
 
 - **`--doom <path>`** — the DOOM install dir (the folder with `DOOMx64vk.exe`). If omitted, the installer
   auto-detects it from your Steam libraries (reads `SteamPath` from the registry, scans

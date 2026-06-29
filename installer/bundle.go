@@ -109,9 +109,13 @@ func fileSHA256(path string) (string, error) {
 // When the repo is public, no token is needed.
 
 type ghRelease struct {
-	TagName    string    `json:"tag_name"`
-	Prerelease bool      `json:"prerelease"`
-	Assets     []ghAsset `json:"assets"`
+	TagName     string    `json:"tag_name"`
+	Name        string    `json:"name"`
+	Prerelease  bool      `json:"prerelease"`
+	PublishedAt string    `json:"published_at"`
+	Body        string    `json:"body"`
+	HTMLURL     string    `json:"html_url"`
+	Assets      []ghAsset `json:"assets"`
 }
 
 type ghAsset struct {
@@ -291,12 +295,59 @@ func cmdSetToken(args []string) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
+		return fmt.Errorf("couldn't create the SnapHak settings folder (%v)", err)
 	}
 	if err := os.WriteFile(p, []byte(strings.TrimSpace(args[0])), 0o600); err != nil {
-		return err
+		return fmt.Errorf("couldn't save your token (%v)", err)
 	}
 	fmt.Println("Token saved. You can now run:  snaphak update --beta")
+	return nil
+}
+
+// cmdChangelog prints the published release history (version, date, notes) from GitHub. The changelog LIVES
+// in the GitHub Releases -- CI auto-generates each release's notes from the commits since the previous tag.
+func cmdChangelog(f flags) error {
+	token := resolveToken(f)
+	var list []ghRelease
+	if err := apiGet("https://api.github.com/repos/"+repoSlug+"/releases?per_page=20", token, &list); err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		fmt.Println("No releases have been published yet.")
+		return nil
+	}
+	installed := ""
+	if rec, err := loadRecord(); err == nil {
+		installed = rec.Version
+	}
+	fmt.Println("SnapHak release history (newest first):")
+	for _, r := range list {
+		kind := ""
+		if r.Prerelease {
+			kind = " (beta)"
+		}
+		date := r.PublishedAt
+		if len(date) >= 10 {
+			date = date[:10]
+		}
+		you := ""
+		if r.TagName == installed {
+			you = "   <- you have this"
+		}
+		fmt.Printf("\n%s%s   %s%s\n", r.TagName, kind, date, you)
+		shown := 0
+		for _, line := range strings.Split(strings.TrimSpace(r.Body), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if shown >= 12 {
+				fmt.Printf("    ... full notes: %s\n", r.HTMLURL)
+				break
+			}
+			fmt.Printf("    %s\n", strings.TrimRight(line, "\r"))
+			shown++
+		}
+	}
 	return nil
 }
 

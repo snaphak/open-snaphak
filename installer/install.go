@@ -83,6 +83,13 @@ func cmdInstall(f flags) error {
 		DoomPath:    doom,
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
 	}
+	// FINAL gate -- runs only after every check passed (DOOM found, DOOM closed, bundle downloaded + verified).
+	if !f.yes && isInteractive() {
+		if !confirm(fmt.Sprintf("About to install SnapHak %s into\n  %s\nContinue?", rec.Version, doom)) {
+			fmt.Println("Cancelled -- nothing was changed.")
+			return nil
+		}
+	}
 	fmt.Printf("Installing SnapHak into %s\n", doom)
 	for _, e := range b.files {
 		target := filepath.Join(doom, e.rel)
@@ -97,7 +104,7 @@ func cmdInstall(f flags) error {
 			}
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
+			return fmt.Errorf("couldn't create a folder in your DOOM install (%v) -- check you have permission (try running as administrator)", err)
 		}
 		if err := copyFile(filepath.Join(b.root, e.rel), target); err != nil {
 			return fmt.Errorf("couldn't write %s into your DOOM folder (%v) -- check you have permission (try running as administrator)", e.rel, err)
@@ -106,7 +113,7 @@ func cmdInstall(f flags) error {
 		fmt.Printf("  + %s\n", e.rel)
 	}
 	if err := saveRecord(rec); err != nil {
-		return err
+		return fmt.Errorf("installed the files, but couldn't write the install record (%v) -- uninstall may not fully clean up", err)
 	}
 	fmt.Printf("Done. SnapHak %s installed. Launch DOOM and open the SnapMap editor.\n", rec.Version)
 	return nil
@@ -136,6 +143,12 @@ func cmdUninstall(f flags) error {
 	}
 	if doomIsRunning() {
 		return fmt.Errorf("DOOM is running -- close it and run this again (its files are in use)")
+	}
+	if !f.yes && isInteractive() {
+		if !confirm(fmt.Sprintf("About to remove SnapHak from\n  %s\nand restore vanilla. Continue?", doom)) {
+			fmt.Println("Cancelled -- nothing was changed.")
+			return nil
+		}
 	}
 	fmt.Printf("Removing SnapHak from %s\n", doom)
 

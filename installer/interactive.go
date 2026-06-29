@@ -17,7 +17,7 @@ func interactiveInstall() {
 
 	doom, err := resolveDoom("")
 	if err != nil {
-		fmt.Println("Could not auto-detect your DOOM 2016 install.")
+		fmt.Println("Couldn't find your DOOM 2016 install automatically.")
 		fmt.Print("Enter the path to your DOOM folder (the one with DOOMx64vk.exe), or leave blank to cancel: ")
 		doom = readLine()
 		if doom == "" || !hasDoomExe(doom) {
@@ -27,12 +27,6 @@ func interactiveInstall() {
 		}
 	} else {
 		fmt.Printf("Found DOOM: %s\n", doom)
-		fmt.Print("Install SnapHak here? [Y/n] ")
-		if !isYes(readLine()) {
-			fmt.Println("Cancelled.")
-			pause()
-			return
-		}
 	}
 
 	if err := cmdInstall(flags{doom: doom}); err != nil {
@@ -54,4 +48,17 @@ func isYes(s string) bool {
 func pause() {
 	fmt.Print("\nPress Enter to exit...")
 	readLine()
+}
+
+// isInteractive reports whether stdin is a real terminal -- so we only prompt when a human can answer.
+// Scripts / CI / piped input skip the confirmation automatically; force-skip with --yes.
+func isInteractive() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+}
+
+// confirm prints a yes/no prompt and returns true on yes (Enter / "y" / "yes").
+func confirm(prompt string) bool {
+	fmt.Print(prompt + " [Y/n] ")
+	return isYes(readLine())
 }

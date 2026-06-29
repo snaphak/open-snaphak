@@ -18,9 +18,10 @@ func usage() {
 	fmt.Print(`snaphak -- open-snaphak installer (` + version + `)
 
 Usage:
-  snaphak install   [--doom <path>] [--local <dist-dir>] [--release <tag>] [--beta]
-  snaphak update    [--doom <path>] [--release <tag>] [--beta]
-  snaphak uninstall [--doom <path>]
+  snaphak install   [--doom <path>] [--local <dist-dir>] [--release <tag>] [--beta] [--yes]
+  snaphak update    [--doom <path>] [--release <tag>] [--beta] [--yes]
+  snaphak uninstall [--doom <path>] [--yes]
+  snaphak changelog
   snaphak status
   snaphak version
   snaphak help
@@ -32,6 +33,7 @@ Options:
                       downloading a release.
   --release <tag>     Install a specific release version instead of the latest.
   --beta              Install the latest beta (pre-release) instead of the latest stable.
+  --yes, -y           Skip the "are you sure?" confirmation (for scripts / automation).
 
 With no --local, install/update download from GitHub. Uninstall restores any files it
 replaced and leaves your %USERPROFILE%\snaphak data untouched.
@@ -57,6 +59,8 @@ func main() {
 		err = cmdUninstall(f)
 	case "status":
 		err = cmdStatus(f)
+	case "changelog", "info", "--info":
+		err = cmdChangelog(f)
 	case "set-token":
 		err = cmdSetToken(os.Args[2:])
 	case "version", "--version", "-v":
@@ -81,6 +85,7 @@ type flags struct {
 	release string
 	beta    bool
 	token   string
+	yes     bool
 }
 
 // parseFlags is a tiny "--key value" parser (the tool's option surface is small + fixed).
@@ -105,6 +110,8 @@ func parseFlags(a []string) flags {
 			}
 		case "--beta":
 			f.beta = true
+		case "--yes", "-y":
+			f.yes = true
 		case "--token":
 			if i+1 < len(a) {
 				i++
