@@ -77,7 +77,8 @@ int sh_ui_bridge_install(void)
     g_argblock.iface    = g_iface;
 
     /* 3) Load the frontend exactly as OG does (relative to the DOOM cwd's snaphak\ overlay). SetDllDirectory
-     *    so snaphakui's Qt5*.dll / plugins resolve from .\snaphak\ + .\plugins\ (OG SetDllDirectoryA). */
+     *    so snaphakui's Qt5*.dll resolve from .\snaphak\ (OG SetDllDirectoryA); the Qt platform plugin
+     *    (qwindows.dll) loads separately from .\platforms\ via Qt's app-exe-dir search. */
     SetDllDirectoryA(".\\snaphak\\");
     g_snaphakui = LoadLibraryA(".\\snaphak\\snaphakui.dll");
     if (!g_snaphakui) {

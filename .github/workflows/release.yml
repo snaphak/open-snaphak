@@ -49,7 +49,7 @@ jobs:
           # snaphak-bundle.zip = the 6-file overlay + MANIFEST.sha256 (the installer's --release download target).
           # snaphak.exe is published as a SEPARATE asset, not bundled into the overlay zip.
           Compress-Archive -Force -DestinationPath snaphak-bundle.zip `
-            -Path dist\XINPUT1_3.dll, dist\snaphak, dist\plugins, dist\MANIFEST.sha256
+            -Path dist\XINPUT1_3.dll, dist\snaphak, dist\platforms, dist\MANIFEST.sha256
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
