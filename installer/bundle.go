@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,7 +38,7 @@ func acquireBundle(f flags) (*bundle, func(), error) {
 		b, err := loadBundle(f.local)
 		return b, noop, err
 	}
-	dir, cleanup, err := downloadRelease(f.release)
+	dir, cleanup, err := downloadRelease(f)
 	if err != nil {
 		return nil, noop, err
 	}
@@ -102,25 +103,53 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// downloadRelease fetches + extracts the release zip into a temp dir, returning that dir and a cleanup func.
-func downloadRelease(tag string) (dir string, cleanup func(), err error) {
+// --- GitHub release resolution ------------------------------------------------------------------------
+// install/update download the release bundle from GitHub via the API. A PRIVATE repo (closed beta) needs a
+// token -- set once with `snaphak set-token <tok>`, or via SNAPHAK_TOKEN / --token; it also enables --beta.
+// When the repo is public, no token is needed.
+
+type ghRelease struct {
+	TagName    string    `json:"tag_name"`
+	Prerelease bool      `json:"prerelease"`
+	Assets     []ghAsset `json:"assets"`
+}
+
+type ghAsset struct {
+	Name               string `json:"name"`
+	URL                string `json:"url"`                  // API URL (token-authed private download)
+	BrowserDownloadURL string `json:"browser_download_url"` // public URL
+}
+
+// downloadRelease resolves the requested release (stable / --beta pre-release / --release tag), downloads
+// its snaphak-bundle.zip asset (with the token if set), and extracts it into a temp dir.
+func downloadRelease(f flags) (dir string, cleanup func(), err error) {
 	noop := func() {}
-	var url string
-	if tag == "" || tag == "latest" {
-		url = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", repoSlug, releaseAsset)
-	} else {
-		url = fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repoSlug, tag, releaseAsset)
+	token := resolveToken(f)
+
+	rel, err := fetchRelease(f, token)
+	if err != nil {
+		return "", noop, err
 	}
+	var asset *ghAsset
+	for i := range rel.Assets {
+		if rel.Assets[i].Name == releaseAsset {
+			asset = &rel.Assets[i]
+			break
+		}
+	}
+	if asset == nil {
+		return "", noop, fmt.Errorf("release %s has no %s asset", rel.TagName, releaseAsset)
+	}
+
 	tmp, err := os.MkdirTemp("", "snaphak-bundle-")
 	if err != nil {
 		return "", noop, err
 	}
 	cleanup = func() { os.RemoveAll(tmp) }
-
 	zipPath := filepath.Join(tmp, releaseAsset)
-	if err := httpDownload(url, zipPath); err != nil {
+	if err := downloadAsset(asset, token, zipPath); err != nil {
 		cleanup()
-		return "", noop, fmt.Errorf("download %s: %w", url, err)
+		return "", noop, err
 	}
 	if err := unzip(zipPath, tmp); err != nil {
 		cleanup()
@@ -129,19 +158,81 @@ func downloadRelease(tag string) (dir string, cleanup func(), err error) {
 	return tmp, cleanup, nil
 }
 
-func httpDownload(url, dest string) error {
+// fetchRelease picks: an explicit --release tag, the latest --beta pre-release, or the latest stable.
+func fetchRelease(f flags, token string) (*ghRelease, error) {
+	base := "https://api.github.com/repos/" + repoSlug + "/releases"
+	switch {
+	case f.release != "":
+		var r ghRelease
+		return &r, apiGet(base+"/tags/"+f.release, token, &r)
+	case f.beta:
+		var list []ghRelease
+		if err := apiGet(base+"?per_page=30", token, &list); err != nil {
+			return nil, err
+		}
+		for i := range list {
+			if list[i].Prerelease {
+				return &list[i], nil
+			}
+		}
+		return nil, fmt.Errorf("no beta (pre-release) build is published yet")
+	default:
+		var r ghRelease
+		return &r, apiGet(base+"/latest", token, &r)
+	}
+}
+
+func apiGet(url, token string, out interface{}) error {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", "snaphak-installer")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 400))
+		hint := ""
+		if resp.StatusCode == http.StatusNotFound && token == "" {
+			hint = " (a private repo needs a token: run `snaphak set-token <tok>`)"
+		}
+		return fmt.Errorf("GitHub API HTTP %d%s: %s", resp.StatusCode, hint, strings.TrimSpace(string(body)))
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// downloadAsset fetches the asset: with a token, the API asset URL + octet-stream (the only way to pull a
+// private-repo asset); without, the public browser_download_url.
+func downloadAsset(a *ghAsset, token, dest string) error {
+	url, accept := a.BrowserDownloadURL, ""
+	if token != "" {
+		url, accept = a.URL, "application/octet-stream"
+	}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "snaphak-installer")
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download %s: HTTP %d", a.Name, resp.StatusCode)
 	}
 	out, err := os.Create(dest)
 	if err != nil {
@@ -150,6 +241,51 @@ func httpDownload(url, dest string) error {
 	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+// --- token storage ------------------------------------------------------------------------------------
+
+func tokenPath() (string, error) {
+	base := os.Getenv("LOCALAPPDATA")
+	if base == "" {
+		return "", fmt.Errorf("LOCALAPPDATA is not set")
+	}
+	return filepath.Join(base, "open-snaphak", "token"), nil
+}
+
+// resolveToken: --token flag > SNAPHAK_TOKEN env > the saved token file.
+func resolveToken(f flags) string {
+	if f.token != "" {
+		return f.token
+	}
+	if t := os.Getenv("SNAPHAK_TOKEN"); t != "" {
+		return t
+	}
+	if p, err := tokenPath(); err == nil {
+		if b, err := os.ReadFile(p); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
+}
+
+// cmdSetToken saves a GitHub token so install/update can pull from a private repo (closed beta).
+func cmdSetToken(args []string) error {
+	if len(args) < 1 || strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("usage: snaphak set-token <github-token>")
+	}
+	p, err := tokenPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(p, []byte(strings.TrimSpace(args[0])), 0o600); err != nil {
+		return err
+	}
+	fmt.Println("Token saved. You can now run:  snaphak update --beta")
+	return nil
 }
 
 // unzip extracts src into dest, guarding against zip-slip path traversal.

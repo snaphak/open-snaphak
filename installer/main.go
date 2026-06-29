@@ -1,9 +1,9 @@
 // snaphak -- the open-snaphak installer.
 //
-// A single static Windows CLI that installs / updates / removes the SnapHak clone overlay in a DOOM 2016
-// install, with backup and an uninstall that restores vanilla. It is NOT the dev differential tool -- it does
-// the clone only: detect DOOM, deploy the 6-file overlay (or download the latest release), and keep a record
-// so uninstall reverses exactly what it placed. Stdlib only, no external dependencies.
+// A single static Windows CLI that installs / updates / removes the SnapHak overlay in a DOOM 2016 install,
+// with backup and an uninstall that restores vanilla. It detects DOOM, deploys the 6-file overlay (or
+// downloads a release), and keeps a record so uninstall reverses exactly what it placed. Stdlib only, no
+// external dependencies.
 package main
 
 import (
@@ -18,21 +18,23 @@ func usage() {
 	fmt.Print(`snaphak -- open-snaphak installer (` + version + `)
 
 Usage:
-  snaphak install   [--doom <path>] [--local <dist-dir>] [--release <tag>]
-  snaphak update    [--doom <path>] [--release <tag>]
+  snaphak install   [--doom <path>] [--local <dist-dir>] [--release <tag>] [--beta]
+  snaphak update    [--doom <path>] [--release <tag>] [--beta]
   snaphak uninstall [--doom <path>]
   snaphak status
   snaphak version
+  snaphak help
 
 Options:
   --doom <path>       The DOOM install dir (the folder with DOOMx64vk.exe).
                       Auto-detected from your Steam libraries if omitted.
   --local <dist-dir>  Install from a local dist/ tree (built by package.ps1) instead of
-                      downloading a GitHub release.
-  --release <tag>     Install a specific release tag instead of the latest.
+                      downloading a release.
+  --release <tag>     Install a specific release version instead of the latest.
+  --beta              Install the latest beta (pre-release) instead of the latest stable.
 
-With no --local, install/update download the latest release bundle from GitHub.
-Uninstall restores any files it replaced and leaves your %USERPROFILE%\snaphak data untouched.
+With no --local, install/update download from GitHub. Uninstall restores any files it
+replaced and leaves your %USERPROFILE%\snaphak data untouched.
 `)
 }
 
@@ -55,6 +57,8 @@ func main() {
 		err = cmdUninstall(f)
 	case "status":
 		err = cmdStatus(f)
+	case "set-token":
+		err = cmdSetToken(os.Args[2:])
 	case "version", "--version", "-v":
 		cmdVersion()
 	case "help", "-h", "--help":
@@ -75,6 +79,8 @@ type flags struct {
 	doom    string
 	local   string
 	release string
+	beta    bool
+	token   string
 }
 
 // parseFlags is a tiny "--key value" parser (the tool's option surface is small + fixed).
@@ -96,6 +102,13 @@ func parseFlags(a []string) flags {
 			if i+1 < len(a) {
 				i++
 				f.release = a[i]
+			}
+		case "--beta":
+			f.beta = true
+		case "--token":
+			if i+1 < len(a) {
+				i++
+				f.token = a[i]
 			}
 		}
 	}
