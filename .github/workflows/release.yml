@@ -1,0 +1,57 @@
+# release.yml -- the maintainer-only release pipeline.
+#
+# Runs ONLY on a pushed tag v* -> it builds only reviewed code, and it is the sole place the publish token
+# lives (unreachable from a PR). Cut a release: `git tag v1.2.3 && git push origin v1.2.3`.
+# It builds the DLLs + the installer, assembles the overlay, and publishes a GitHub Release with the bundle
+# zip + snaphak.exe + install.ps1. (The release publishes to THIS repo via the github context -- no slug.)
+#
+# HARDENING TODO before going public: pin every third-party action to a full commit SHA.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the GitHub Release
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt 5.9.9
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.9.9'
+          arch: win64_msvc2017_64
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - name: Build + package
+        shell: pwsh
+        run: |
+          .\build.ps1 -QtDir "$env:QT_ROOT_DIR";   if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          .\package.ps1 -QtDir "$env:QT_ROOT_DIR";  if ($LASTEXITCODE -ne 0) { throw "package failed" }
+      - name: Build installer (version-stamped)
+        shell: pwsh
+        working-directory: installer
+        run: |
+          go build -ldflags "-X main.version=${{ github.ref_name }}" -o ..\dist\snaphak.exe .
+          if ($LASTEXITCODE -ne 0) { throw "installer build failed" }
+      - name: Zip the overlay
+        shell: pwsh
+        run: |
+          # snaphak-bundle.zip = the 6-file overlay + MANIFEST.sha256 (the installer's --release download target).
+          # snaphak.exe is published as a SEPARATE asset, not bundled into the overlay zip.
+          Compress-Archive -Force -DestinationPath snaphak-bundle.zip `
+            -Path dist\XINPUT1_3.dll, dist\snaphak, dist\plugins, dist\MANIFEST.sha256
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            snaphak-bundle.zip
+            dist/snaphak.exe
+            installer/install.ps1
+          generate_release_notes: true

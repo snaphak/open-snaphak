@@ -1,0 +1,110 @@
+# CI -- the pull-request gate (the supply-chain defense; see the distribution spec, contributor-security).
+#
+# Runs on every PR in a SECRETLESS sandbox: the `pull_request` trigger gives fork PRs a read-only token and
+# zero repo secrets. NEVER switch this to `pull_request_target` -- that runs fork code with secrets + base
+# write context (the classic PR -> secret-exfil / RCE footgun). The only workflow that holds publish/signing
+# secrets is release.yml, and it runs only on a reviewed tag.
+#
+# HARDENING TODO before this repo goes public: pin every third-party action below to a full commit SHA.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Security guard (secretless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute diff base
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE='${{ github.event.pull_request.base.sha }}'
+          else
+            BASE='${{ github.event.before }}'
+          fi
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          fi
+          echo "sha=$BASE" >> "$GITHUB_OUTPUT"
+      - name: No new binaries
+        run: |
+          BASE='${{ steps.base.outputs.sha }}'
+          ADDED=$(git diff --diff-filter=A --name-only "$BASE...HEAD")
+          BAD=$(printf '%s\n' "$ADDED" | grep -Ei '\.(dll|exe|obj|lib|exp|pdb|ilk|bin|so|dylib|a|zip|7z)$' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::This PR adds binary file(s) -- forbidden; the source is the only deliverable, CI builds binaries:"
+            printf '%s\n' "$BAD"
+            exit 1
+          fi
+          echo "OK: no binary files added."
+      - name: Capability-surface scan
+        run: |
+          BASE='${{ steps.base.outputs.sha }}'
+          ADDED=$(git diff "$BASE...HEAD" -- 'src/**' 'installer/**' | grep -E '^\+' | grep -v '^\+\+\+' || true)
+          PAT='WinHttp|URLDownloadToFile|InternetOpen|WSAStartup|\bsocket\s*\(|CreateProcess|ShellExecute|WinExec|\bsystem\s*\(|WriteProcessMemory|VirtualAllocEx|CurrentVersion..Run|schtasks|RegSetValue'
+          HITS=$(printf '%s\n' "$ADDED" | grep -nEi "$PAT" || true)
+          if [ -n "$HITS" ]; then
+            echo "::warning::Capability-surface scan flagged new lines for MANUAL review (the tool has no legitimate"
+            echo "::warning::reason to open sockets, download, spawn processes, or set persistence):"
+            printf '%s\n' "$HITS"
+          else
+            echo "OK: no flagged capability-surface APIs introduced."
+          fi
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  build:
+    name: Build + test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt 5.9.9
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.9.9'
+          arch: win64_msvc2017_64
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - name: Build both DLLs
+        shell: pwsh
+        run: |
+          .\build.ps1 -QtDir "$env:QT_ROOT_DIR"
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+      - name: Package the overlay
+        shell: pwsh
+        run: |
+          .\package.ps1 -QtDir "$env:QT_ROOT_DIR"
+          if ($LASTEXITCODE -ne 0) { throw "package failed" }
+      - name: XInput ordinal parity (must match System32)
+        shell: pwsh
+        run: |
+          $dumpbin = (Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1).FullName
+          $ex = & $dumpbin /exports build\XINPUT1_3.dll
+          if (-not ($ex -match '(?m)^\s*2\s.*XInputGetState') -or -not ($ex -match '(?m)^\s*3\s.*XInputSetState')) {
+            $ex | Write-Host
+            throw "XInput ordinals must be 2=GetState, 3=SetState"
+          }
+          Write-Host "ordinals OK (2=GetState, 3=SetState)"
+      - name: Installer -- gofmt + vet + test + build
+        shell: pwsh
+        working-directory: installer
+        run: |
+          $u = gofmt -l .
+          if ($u) { throw "gofmt: these files need formatting: $u" }
+          go vet ./...;   if ($LASTEXITCODE -ne 0) { throw "go vet failed" }
+          go test ./...;  if ($LASTEXITCODE -ne 0) { throw "go test failed" }
+          go build -o snaphak.exe .; if ($LASTEXITCODE -ne 0) { throw "go build failed" }

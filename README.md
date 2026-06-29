@@ -1,99 +1,120 @@
 # open-snaphak
 
-An open-source, clean-room reimplementation of **SnapHak** — Chrispy's closed-source
-modding tool for DOOM 2016's in-game **SnapMap** level editor. It compiles to two drop-in
-DLLs that, injected into a stock DOOM 2016 install, reproduce SnapHak's editor extensions:
-the console-command/cvar hook layer and the "SnapHak Studio" Qt window.
+An open-source, clean-room reimplementation of **SnapHak** — Chrispy's closed-source modding tool for
+DOOM 2016's in-game **SnapMap** level editor. It builds to two drop-in DLLs that, deployed into a stock
+DOOM 2016 install, reproduce SnapHak's editor extensions: the console-command/cvar hook layer and the
+"SnapHak Studio" Qt window.
 
-**This repo ships NO DOOM or SnapHak bytes.** Every line is built from the project's own
-reverse-engineering of the engine and the original tool — there is no decompiled or copied
-binary content here. The original SnapHak is closed-source; this is an independent,
-ground-up reimplementation.
+**This repo ships NO DOOM or SnapHak bytes.** Every line is built from the project's own reverse-engineering
+of the engine and the original tool — no decompiled or copied binary content. The original SnapHak is
+closed-source; this is an independent, ground-up reimplementation. Legitimate single-player game-modding
+research; the third-party runtime it links against (Qt, the DOOM engine) is not included.
 
-> Legitimate single-player game-modding research. The deliverable is the source in `src/`;
-> the third-party runtime it links against (Qt, the DOOM engine) is *not* included.
+## Repository layout
 
-## What's in the box — the two DLLs
+| Path | What |
+|---|---|
+| `src/backend/` | the backend DLL (`XINPUT1_3.dll`): the hook layer, 24 console commands, 9 cvars, cvar-unlock, and the resident fault-shield |
+| `src/ui/` | the frontend DLL (`snaphakui.dll`): the Qt **"SnapHak Studio"** window |
+| `src/common/` | the shared backend↔frontend interface ABI (`snaphak_iface.h`) |
+| `src/fault_shield/` | the recover-in-place vectored-exception fault shield (compiled into the backend) |
+| `build.ps1` | compile both DLLs → `build/` |
+| `package.ps1` | assemble the deployable overlay → `dist/` (the DLLs + the Qt runtime) |
+| `installer/` | `snaphak.exe` — the end-user install / update / uninstall CLI (Go) |
+| `docs/` | architecture · fidelity · capabilities · packaging |
 
-| Built DLL | From | What it is |
-|---|---|---|
-| **`XINPUT1_3.dll`** (backend) | `src/backend/` | The hook layer: the inline-detour installer, rawmap save/load swap, palette unhide, overrides file-shadow, the `#str_` string injector, the **22 console commands**, the **9 cvars**, the SnapStack `sh` dispatcher, the shared interface object, plus the built-in **cvar-unlock** (developer cvars + `+<cvar>` launch options) and the resident **fault-shield**. |
-| **`snaphakui.dll`** (frontend) | `src/ui/` | The Qt **"SnapHak Studio"** window — 6 tabs (Entities, Entity State, Prefabs, Timelines, Timeline Editor, Editor-Lua) with the SnapStack store-ops and the per-tab handlers. |
+`build/` and `dist/` are gitignored — the **source is the deliverable**; the binaries are rebuilt.
 
-Two more source trees feed those DLLs:
+## Quick start (players)
 
-- **`src/common/`** — the shared **interface ABI** (`snaphak_iface.h`). The backend *creates*
-  this object and pins its 77-slot vtable; the frontend *consumes* it. Both DLLs include the
-  same header so the layout is a matched pair (see `docs/architecture.md`).
-- **`src/fault_shield/`** — the recover-in-place **VEH** (vectored exception handler). It is
-  **compiled into the backend `XINPUT1_3.dll`**, not shipped separately. Where the original
-  SnapHak's fault handler pops a message box and terminates DOOM, the fault-shield catches the
-  access violation, reverts the bad edit, and shows a toast (see `docs/fidelity.md`).
+You do **not** need to build anything. Get the installer from the latest release and run:
 
-## Build
+```
+snaphak install
+```
 
-Requirements:
+It auto-detects your DOOM install via Steam, deploys the overlay, and backs up anything it replaces. Then:
+`snaphak update`, `snaphak status`, and `snaphak uninstall` (which restores DOOM to vanilla and leaves your
+`%USERPROFILE%\snaphak` data untouched). See [`installer/README.md`](installer/README.md).
 
-- **MSVC 2022 Build Tools** (the C++ "Desktop development with C++" workload).
-- **Qt 5.9.9** for MSVC 2017 64-bit, at `C:\Qt\5.9.9\msvc2017_64`
-  (the frontend links Qt5Core/Gui/Widgets; override the path with `-QtDir` on
-  `src/ui/build.ps1` if yours differs).
+> Releases are produced by CI. Until the first release is published, build from source (below).
 
-Build both DLLs:
+## Build from source
+
+**Requirements**
+- **MSVC 2022 Build Tools** (the "Desktop development with C++" workload)
+- **Qt 5.9.9** for MSVC 2017 64-bit at `C:\Qt\5.9.9\msvc2017_64` (override with `-QtDir`)
+- **Go 1.21+** (only to build the installer)
 
 ```powershell
+# 1. compile both DLLs -> build/
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File build.ps1
+
+# 2. assemble the deployable overlay -> dist/ (the 6-file DOOM tree: DLLs + Qt runtime)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File package.ps1
+
+# 3. (optional) build the installer
+cd installer ; go build -o snaphak.exe .
 ```
 
-This produces `src/backend/XINPUT1_3.dll` and `src/ui/snaphakui.dll`. The two sub-builds
-(`src/backend/build.ps1`, `src/ui/build.ps1`) can also be run on their own.
+## Deploy a local build (contributors / testing)
 
-## Install / use
-
-Deploy the built DLLs into your DOOM 2016 install (the folder that contains `DOOMx64vk.exe`):
+Deploy your fresh `dist/` into your own DOOM with the installer's **local** mode — the same path end users
+take, just from your build instead of a release:
 
 ```
-XINPUT1_3.dll            ->  <DOOM>\XINPUT1_3.dll
-snaphakui.dll            ->  <DOOM>\snaphak\snaphakui.dll
+installer\snaphak.exe install --local dist
 ```
 
-The frontend also needs the **Qt 5.9.9 runtime** deployed alongside it:
+`snaphak.exe uninstall` reverses it. (Or drop `dist\*` into the DOOM root by hand — `dist/` mirrors the exact
+overlay tree.) Launch DOOM, enter the SnapMap editor; the "SnapHak Studio" window opens (run `sh` in the
+console if it doesn't). DOOM keeps using the real `XInput1_3.dll` in System32 for controller input — the
+backend forwards every XInput export through to it.
 
-- `Qt5Core.dll`, `Qt5Gui.dll`, `Qt5Widgets.dll` → `<DOOM>\snaphak\`
-- the platform plugin `qwindows.dll` → `<DOOM>\plugins\platforms\` — **required**: without the Qt
-  platform plugin the "SnapHak Studio" window silently fails to open.
+## Contributing
 
-These come from your own Qt 5.9.9 install; the repo ships no Qt bytes. (The original SnapHak also
-shipped `Qt5Svg.dll` and `lua51.dll`; the clone's frontend imports neither — `Qt5Svg` only as an
-optional image-format plugin, `lua51` delay-loaded and unused — so they are not required.)
+Contributions are welcome.
 
-Launch DOOM and enter the SnapMap editor. The "SnapHak Studio" window opens automatically
-(run `sh` in the console if it doesn't). DOOM keeps using the real `XInput1_3.dll` in
-System32 for controller input — the backend forwards every XInput export through to it.
+1. **Fork** this repo (or branch, if you have write access).
+2. Make your change under `src/`. Build (`build.ps1`), package (`package.ps1`), and test it in your own DOOM
+   via `installer\snaphak.exe install --local dist`.
+3. Open a **pull request** against `main`. CI runs a gate (build + tests + a security scan); a maintainer
+   reviews and merges. Tagged, reviewed commits are what produce releases.
 
-## Architecture map
+**Keep PRs clean:**
+- **No binaries.** Never commit a `.dll`/`.exe`/`.obj`/etc. — they're gitignored and **CI rejects any PR that
+  adds one**. The source is the only deliverable; CI builds the binaries.
+- **Clean-room only.** Contribute your **own** RE/implementation. Do not paste decompiled or copyrighted
+  DOOM/SnapHak content.
+- **Match the surrounding code** — the backend is plain C, the UI is Qt/C++; keep source **pure ASCII** (the
+  PowerShell build reads BOM-less UTF-8 as Windows-1252). Run **`gofmt`** on anything in `installer/`.
+
+Because the tool injects into DOOM, the release channel is a supply-chain target. PR CI runs in a
+**secretless** sandbox (it cannot publish or touch signing keys), a maintainer reviews every diff, and a scan
+flags any newly-introduced network / process-spawn / persistence code — the tool has no legitimate reason to
+do any of that.
+
+### Generated headers — don't hand-edit
+
+A few committed headers are **data tables generated by the dev-repo RE pipeline**, not hand-authored source:
+`src/ui/sh_*.h` (entity descriptions, event catalog/docs, asset lists, the inherit/class universe) and
+`src/backend/class_universe.h`. They're checked in so the repo builds standalone, but they're *regenerated* —
+hand-editing them here is not the intended workflow.
+
+## Architecture & reference
 
 | Doc | What |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | The 3-object model (window / controller / backend-owned interface), the 30 Hz manual think-loop, the 77-slot interface vtable, and the backend↔frontend DLL boundary. |
-| [`docs/fidelity.md`](docs/fidelity.md) | The quirks of the original SnapHak the clone reproduces on purpose (and why), plus the one sanctioned divergence (the fault-shield). |
-| [`docs/capabilities.md`](docs/capabilities.md) | The feature inventory — every console command, cvar, SnapStack op, GUI tab, and hook behavior, with one-line descriptions. |
+| [`docs/architecture.md`](docs/architecture.md) | the 3-object model (window / controller / backend-owned interface), the 30 Hz think-loop, the 77-slot interface vtable, the backend↔frontend boundary |
+| [`docs/fidelity.md`](docs/fidelity.md) | the original's quirks the clone reproduces on purpose, and the one sanctioned divergence (the fault-shield) |
+| [`docs/capabilities.md`](docs/capabilities.md) | the full feature inventory — every console command, cvar, SnapStack op, and GUI tab |
+| [`docs/packaging.md`](docs/packaging.md) | the deployable bundle: the 6-file overlay + the Qt runtime |
 
-## A note on the generated headers
+## Overrides (runtime, not shipped)
 
-A few committed headers are **data tables generated by the dev-repo tooling**, not hand-edited
-source — the `src/ui/sh_*.h` lookup tables (entity descriptions, event catalog/docs, asset
-lists, the inherit/class universe) and `src/backend/class_universe.h`. They are checked in so
-the repo builds standalone, but they are *regenerated*, not authored. Contributors who need to
-refresh them do so from the dev repo's RE pipeline (the corpus/decl extractors) — editing them
-by hand here is not the intended workflow.
-
-## A note on overrides
-
-At runtime the tool reads per-user **override decls** from `%USERPROFILE%\snaphak\overrides\`
-(a file-shadow over the engine's resource loader — e.g. to make extra editor entities
-placeable). **This repo ships none.** Drop your own decls into that folder and the tool picks
-them up; they are pure data, not part of the product source.
+At runtime the tool reads per-user **override decls** from `%USERPROFILE%\snaphak\overrides\` (a file-shadow
+over the engine's resource loader — e.g. to make extra editor entities placeable). **This repo ships none.**
+Drop your own decls there and the tool picks them up. Runtime logs go to `<DOOM>\snaphak_logs\`.
 
 ## License
 
