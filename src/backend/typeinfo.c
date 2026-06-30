@@ -359,6 +359,32 @@ static void ti_dump_append(char *buf, size_t cap, size_t *len, const char *s)
     buf[*len] = '\0';
 }
 
+/* Emit a possibly-multi-KB string through sh_printf, which truncates EACH call at its 1024-byte stack
+ * buffer (commands.c). OG sh_type (FUN_180021090) printed field-by-field -- each line well under the cap --
+ * but we accumulate the whole struct into one buffer for the clipboard copy, so a single sh_printf("%s",dump)
+ * is silently cut off at ~1KB (idMover stops mid-field at crushDislodgeForceMult). Chunk the on-screen emit
+ * under the cap, breaking on newlines so a chunk never splits a field line. The clipboard still gets the full
+ * dump. */
+static void ti_emit_long(const char *s)
+{
+    if (s == NULL) return;
+    const size_t CHUNK = 1000;            /* < sh_printf's 1024 buf; "%s" expands the content 1:1 */
+    char piece[1024];
+    size_t n = strlen(s), i = 0;
+    while (i < n) {
+        size_t take = (n - i < CHUNK) ? (n - i) : CHUNK;
+        if (take == CHUNK) {              /* break at the last newline in the window (keep lines whole) */
+            size_t br = take;
+            while (br > 0 && s[i + br - 1] != '\n') br--;
+            if (br > 0) take = br;        /* no newline in the window -> emit the full CHUNK as-is */
+        }
+        memcpy(piece, s + i, take);
+        piece[take] = '\0';
+        sh_printf("%s", piece);
+        i += take;
+    }
+}
+
 /* [3] sh_type <name> -- dump a CLASS's fields or an ENUM's members as C-struct/enum text, print it, and
  * copy it to the clipboard. Port of OG FUN_180021090.
  *   reflect = declMgr->reflect; rec = FindTypeInfoByName(reflect,name);
@@ -431,7 +457,7 @@ void h_sh_type(idCmdArgs *a)
         }
         ti_dump_append(dump, sizeof dump, &dlen, "};\n");
 
-        sh_printf("%s", dump);
+        ti_emit_long(dump);
         sh_printf("Dumped type is a Class\n");
         if (sh_clipboard_set(dump))
             sh_printf("sh_type: copied type '%s' to the clipboard.\n", type);
@@ -461,7 +487,7 @@ void h_sh_type(idCmdArgs *a)
     }
     ti_dump_append(dump, sizeof dump, &dlen, "};\n");
 
-    sh_printf("%s", dump);
+    ti_emit_long(dump);
     sh_printf("Dumped type is a Enum\n");
     if (sh_clipboard_set(dump))
         sh_printf("sh_type: copied enum '%s' to the clipboard.\n", type);

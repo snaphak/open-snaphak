@@ -256,17 +256,24 @@ static void populate_one_entity(ShWinController *win, sh_iface *iface, int id)
     bool hideBuiltin = hide && hide->isChecked();
     if (hideBuiltin && id <= 0x37) return;
 
+    /* OG (FUN_1800147e8) appends ":<displayName>" to the id-string when the entity has a name (the +0x70
+     * get_displayname_ptr slot), and labels/filters the COMBINED string -> the list shows the entity name
+     * beside its id AND is searchable by name. Our prior port used the bare id-string for both, dropping the
+     * name. Restore the OG label; the colon suffix appears only for a named entity (displayName non-empty). */
+    std::string dn = iface_displayname(iface, id);
+    std::string label = dn.empty() ? idStr : (idStr + ":" + dn);
+
     /* the substring filter (line_edit_entity_filter). Empty -> no filter (OG: if filter non-empty, require
-     * the id-string CONTAIN it). */
+     * the COMBINED label CONTAIN it -> searchable by id-string OR name). */
     QLineEdit *flt = static_cast<QLineEdit *>(WUI(SH_UI_line_edit_entity_filter));
     if (flt) {
         QByteArray f = flt->text().toLocal8Bit();
-        if (f.size() > 0 && idStr.find(f.constData()) == std::string::npos) return;
+        if (f.size() > 0 && label.find(f.constData()) == std::string::npos) return;
     }
 
     QListWidget *lst = static_cast<QListWidget *>(WUI(SH_UI_widget_entity_list));
     if (lst) {
-        QListWidgetItem *it = new QListWidgetItem(QString::fromStdString(idStr));
+        QListWidgetItem *it = new QListWidgetItem(QString::fromStdString(label));
         it->setData(SH_ITEM_ID_ROLE, id);
         lst->addItem(it);
     }
