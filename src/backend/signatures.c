@@ -382,6 +382,24 @@ const sig_entry BACKEND_ENGINE_SIGNATURES[] = {
       "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 "
       "4C 8B 8A C8 04 02 00 48 8B EA 4C 63 51 10",
       0xCDBB40u },
+    { "WireConnectCreator1", /* FUN_140cdb990 -- the editor wire tool's connect creator for an OUTPUT-NODE
+                              * source (the pick processor's creator-selector 1, vs cdbb40's selector 0 for a
+                              * base-entity source). wiring_mode.c inline-detours it (Hook 3 of the interactive
+                              * wire-any mode): when the source is an output node, the target pick reaches THIS
+                              * creator; in wire-mode it records the target into the tool's chain slot 0x18
+                              * (the source is already in slot 0x14) + sets the direct-edge flags, so the
+                              * tool's trailing finalize lays a direct source->target edge for ANY target --
+                              * including a node-less target (e.g. a timeline) the stock creator would
+                              * node-mediate (the "which input" radial). The detour is flag-gated + off by
+                              * default, so OFF is a transparent passthrough. ABI: void(tool, world, idx[int]);
+                              * world+0x204c8 = the editor entity table. Unique @ a 52-byte body: the generic
+                              * save prologue + MOVSXD RDI,R8D (49 63 F8 -- distinct from the 3 sibling
+                              * creators cdb610\cdb860\cdbb40) + the source/world deref chain (world+0x204c8 ->
+                              * +0x6a0 -> entity, TEST +0x164,0x20); the 4 wildcard bytes are the rel32 jz disp
+                              * (build-volatile). Re-derive (per DOOM build): decompile FUN_140cdb990. */
+      "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 49 63 F8 48 8B F2 48 8B D9 83 FF FF "
+      "0F 84 ?? ?? ?? ?? 48 8B 8A C8 04 02 00 48 8B 81 A0 06 00 00 48 8B 04 F8 F6 80 64 01 00 00 20",
+      0xCDB990u },
     { "WireOutputState",   /* FUN_140cdaa30 -- the editor wire tool's output-select FSM leaf (reached after
                             * the first/source pick; the stock leaf raises a modal output-node picker).
                             * wiring_mode.c inline-detours it (Hook 1 of the interactive wire-any mode): in
