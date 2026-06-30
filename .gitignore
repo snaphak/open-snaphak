@@ -11,3 +11,6 @@ dist/
 *.ilk
 *.cod
 *.log
+
+# Local Claude Code config (per-machine; not part of the public package)
+.claude/
