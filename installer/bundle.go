@@ -332,32 +332,56 @@ func cmdChangelog(f flags) error {
 	return nil
 }
 
-// formatChangelog renders the release history: the newest release's notes IN FULL (verbatim, no truncation
-// and no link), then older releases as a compact list each with a link to its GitHub page. Pure (no I/O) so
-// it is unit-testable. `list` is newest-first (the GitHub API order); `installed` is the currently-installed tag.
+// changelogPreviewLines caps how many notes lines an OLDER release shows before it defers to its GitHub link.
+const changelogPreviewLines = 12
+
+// formatChangelog renders the release history. The NEWEST release shows ALL of its notes (no truncation) plus
+// a link to the full GitHub notes; each OLDER release shows a preview (up to changelogPreviewLines lines) then
+// a "full notes" link when there is more. Pure (no I/O) so it is unit-testable. `list` is newest-first (the
+// GitHub API order); `installed` is the currently-installed tag (marked with "<- you have this").
 func formatChangelog(list []ghRelease, installed string) string {
 	var b strings.Builder
 
-	// The newest release: full notes, verbatim.
+	// The newest release: every line, no cap, then the link (in case a user wants the full per-commit notes).
 	newest := list[0]
 	fmt.Fprintf(&b, "Latest release: %s\n\n", releaseHeadline(newest, installed))
-	body := strings.TrimRight(newest.Body, " \t\r\n")
-	if body == "" {
-		b.WriteString("    (no notes were published for this release)\n")
-	} else {
-		for _, line := range strings.Split(body, "\n") {
-			fmt.Fprintf(&b, "    %s\n", strings.TrimRight(line, "\r"))
-		}
-	}
+	writeNotes(&b, newest, -1)
+	fmt.Fprintf(&b, "    Full notes: %s\n", newest.HTMLURL)
 
-	// Older releases: a compact list, each with a link to its GitHub notes.
+	// Older releases: a headline + a capped preview, deferring to the link when truncated.
 	if len(list) > 1 {
 		b.WriteString("\nEarlier releases:\n")
 		for _, r := range list[1:] {
-			fmt.Fprintf(&b, "  %s\n      %s\n", releaseHeadline(r, installed), r.HTMLURL)
+			fmt.Fprintf(&b, "\n  %s\n", releaseHeadline(r, installed))
+			writeNotes(&b, r, changelogPreviewLines)
 		}
 	}
 	return b.String()
+}
+
+// writeNotes writes a release's notes, indented. limit < 0 prints every line verbatim (blank lines kept). With
+// limit >= 0 it prints at most `limit` non-blank lines and, if the notes are longer, appends a
+// "... full notes: <link>" line instead of the remainder.
+func writeNotes(b *strings.Builder, r ghRelease, limit int) {
+	body := strings.TrimRight(r.Body, " \t\r\n")
+	if body == "" {
+		b.WriteString("    (no notes were published for this release)\n")
+		return
+	}
+	shown := 0
+	for _, line := range strings.Split(body, "\n") {
+		if limit >= 0 {
+			if strings.TrimSpace(line) == "" {
+				continue // skip blank lines in the capped preview
+			}
+			if shown >= limit {
+				fmt.Fprintf(b, "    ... full notes: %s\n", r.HTMLURL)
+				return
+			}
+		}
+		fmt.Fprintf(b, "    %s\n", strings.TrimRight(line, "\r"))
+		shown++
+	}
 }
 
 // releaseHeadline formats a one-line "tag (beta)   date   <- you have this" summary for a release.
