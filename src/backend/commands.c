@@ -347,23 +347,46 @@ static void h_sh_listres(idCmdArgs *a)
     free(buf.data);
 }
 
-/* [5] sh_entlist [filter] -- print the vendored idEntity class-name list, skipping idTarget_Command;
- * if argv[1] is present, substring-filter. Clone of OG FUN_180021b50 (its decompile @0x21b50) -- the OG walks
- * a STATIC ptr-table, so the clone walks our vendored B2_ENTLIST_CLASSES verbatim; plain strcmp/strstr,
- * no engine call. */
+/* [5] sh_entlist [filter] -- list every idEntity-derived class NAME; if argv[1] is present, substring-filter.
+ * Clone of OG FUN_180021b50. OG walked a STATIC ptr-table (its own hardcoded snapshot of the idEntity subclass
+ * set); we RE'd that this snapshot IS the engine's idEntity-derived reflection walk (our idEntity-derived live
+ * set reproduces OG's 892 STRING-FOR-STRING). So the
+ * clone enumerates the LIVE type registry (sh_typeinfo_collect_classnames) and keeps every class that derives
+ * from idEntity -- byte-identical to OG's list on this build BUT portable (auto-tracks DOOM patches) AND it
+ * surfaces any decl-less idEntity class OG's frozen snapshot happened to miss. Two deliberate divergences from
+ * OG: (1) we do NOT skip idTarget_Command (OG hid it; the user wants it listed -- it is a real, makeable
+ * idEntity class); (2) a trailing count line. Fallback: if the live registry is unreachable (pre-boot), walk
+ * the static B2_ENTLIST_CLASSES snapshot. The idEntity-derive filter naturally excludes non-entity types
+ * (components / managers / structs) the raw registry also holds. */
+#define SH_ENTLIST_MAX  16384   /* candidate-buffer cap (this build ~10,190 registered types) */
 static void h_sh_entlist(idCmdArgs *a)
 {
     const char *filter = cmd_argv(a, 1);        /* NULL => no filter (OG: argc<=1) */
 
+    static const char *names[SH_ENTLIST_MAX];   /* main-thread-serial console handler -> static is safe */
     int printed = 0;
-    for (int i = 0; i < B2_ENTLIST_CLASS_COUNT; i++) {
-        const char *name = B2_ENTLIST_CLASSES[i];
-        if (strcmp(name, "idTarget_Command") == 0) continue;                     /* OG skips this one */
-        if (filter != NULL && strstr(name, filter) == NULL) continue;            /* substring filter */
-        sh_printf("%s\n", name);
-        printed++;
+    int k = sh_typeinfo_collect_classnames(names, SH_ENTLIST_MAX);
+    if (k > 0) {                                 /* LIVE registry: keep idEntity subclasses (excl. idEntity base) */
+        for (int i = 0; i < k; i++) {
+            const char *name = names[i];
+            if (name == NULL || strcmp(name, "idEntity") == 0) continue;          /* list SUBCLASSES (OG-faithful) */
+            if (sh_typeinfo_class_derives(name, "idEntity") != 1) continue;       /* keep only idEntity-derived */
+            if (filter != NULL && strstr(name, filter) == NULL) continue;         /* substring filter */
+            sh_printf("%s\n", name);
+            printed++;
+        }
+        if (k >= SH_ENTLIST_MAX)
+            sh_printf("(registry list truncated at %d -- raise SH_ENTLIST_MAX)\n", SH_ENTLIST_MAX);
+    } else {                                     /* fallback: the static idEntity-subclass snapshot */
+        for (int i = 0; i < B2_ENTLIST_CLASS_COUNT; i++) {
+            const char *name = B2_ENTLIST_CLASSES[i];
+            if (filter != NULL && strstr(name, filter) == NULL) continue;         /* substring filter */
+            sh_printf("%s\n", name);
+            printed++;
+        }
     }
-    (void)printed;
+    sh_printf("(%d entity classes%s%s)\n", printed,
+              filter ? " matching " : "", filter ? filter : "");
 }
 
 /* ----------------------------------------------------------------- [15][16] devmode -------------

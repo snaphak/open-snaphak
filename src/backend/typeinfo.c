@@ -297,6 +297,41 @@ const char *sh_typeinfo_inherit_base(const char *inheritName, char *buf, size_t 
     } __except (EXCEPTION_EXECUTE_HANDLER) { buf[0] = '\0'; return NULL; }
 }
 
+/* -------------------------------------------------- LIVE reflection type-registry walk (enumerate all) ----
+ * The registry is a NULL-name-sentinel flat array reachable from the SAME reflect sh_type uses: P =
+ * *(reflect+0) (the container global), type-record array B = *(P+0x20), records stride 0x38, className @
+ * rec+0x00 (NULL = end), superclass name @ rec+0x08. RE'd from the engine: FindTypeInfoByName 0x1A1D590
+ * returns *(*(reflect+0)+0x20)+idx*0x38; the registry builder 0x1A1EEE0 + registrar 0x1A1CCF0 iterate the
+ * same array; the idEntity-derived subset reproduces OG's frozen 892 string-for-string (verified). Reuses
+ * ti_get_reflect() -- ZERO new sigs/offsets. */
+#define REGISTRY_TYPEBASE_OFF   0x20      /* container P -> type-record array base (*(P+0x20)) */
+#define REGISTRY_RECORD_STRIDE  0x38      /* per-record stride */
+#define REGISTRY_NAME_OFF       0x00      /* record -> className char* (NULL name terminates the array) */
+#define REGISTRY_WALK_CAP       65536u    /* stale/garbage-array guard (this build has ~10,190 records) */
+
+int sh_typeinfo_collect_classnames(const char **out_names, int cap)
+{
+    if (!out_names || cap <= 0) return -1;
+    void *reflect = ti_get_reflect();
+    if (!reflect) return -1;                          /* pre-boot / unresolved -> caller falls back */
+    int n = 0;
+    __try {
+        const uint8_t *P = *(const uint8_t * const *)reflect;                 /* container = *(reflect+0) */
+        if (!P) return -1;
+        const uint8_t *B = *(const uint8_t * const *)(P + REGISTRY_TYPEBASE_OFF);  /* type-record array base */
+        if (!B) return -1;
+        for (uint32_t i = 0; i < REGISTRY_WALK_CAP && n < cap; i++) {
+            const uint8_t *rec = B + (size_t)i * REGISTRY_RECORD_STRIDE;
+            const char *name = *(const char * const *)(rec + REGISTRY_NAME_OFF);
+            if (name == NULL) break;                  /* NULL-name sentinel = end of array */
+            out_names[n++] = name;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        /* a shifted/garbage array degrades to whatever we collected -- never a crash */
+    }
+    return n;
+}
+
 /* ----------------------------------------------------------------------------- handlers ----------
  * Non-static (extern-declared in commands.c) so CMD_TABLE references them directly. */
 
@@ -507,12 +542,29 @@ void h_sh_type(idCmdArgs *a)
         sh_printf("sh_type: copied enum '%s' to the clipboard.\n", type);
 }
 
+/* Filter+print one candidate C for sh_validclasses: emit if C == Y or C derives from Y (the LIVE engine
+ * ancestry check, the SAME derive-rule the apply-guard uses -> the list == exactly what a Save accepts).
+ * Bumps *count on emit; sets *y_seen when C == Y. */
+static void vc_emit(const char *C, const char *Y, int *count, int *y_seen)
+{
+    if (!C || !C[0]) return;
+    int is_y = (strcmp(C, Y) == 0);
+    if (is_y) *y_seen = 1;
+    if (is_y || sh_typeinfo_class_derives(C, Y) == 1) {
+        sh_printf("  %s\n", C);
+        (*count)++;
+    }
+}
+
 /* [+] sh_validclasses <inherit> -- the class-dropdown ENUMERATOR. Resolve Y = the inherit's base className
- * (sh_typeinfo_inherit_base, the engine-exact rule's base), then list every className in the SnapMap universe
- * (class_universe.h, the 412 distinct entityDef classes) that DERIVES from Y (sh_typeinfo_class_derives,
- * the LIVE ancestry walk -- the static list is only the candidate set, the filter is live + portable). This
- * IS the set the class dropdown shows when the user picks an inherit; picking an idEntity-rooted inherit
- * (snapmaps/unknown / target/default) lists ALL classes (the universal escape hatch). */
+ * (sh_typeinfo_inherit_base), then list every registered className that DERIVES from Y. The candidate set is
+ * the LIVE reflection type registry (sh_typeinfo_collect_classnames -- every registered idTypeInfo, not a
+ * frozen decl-corpus list), so classes with NO editor decl (idBillboard, idTarget_Command, ...) ARE surfaced;
+ * the filter (sh_typeinfo_class_derives) is the engine's own ancestry walk, so the list == exactly what a Save
+ * accepts. Portable: auto-tracks DOOM patches, ZERO hardcoded class data. Fallback: if the live registry is
+ * unreachable (pre-boot), serve the static class_universe.h candidate set (the degraded, decl-corpus subset).
+ * Picking an idEntity-rooted inherit (snapmaps/unknown / target/default) lists ALL entity classes. */
+#define SH_REGISTRY_MAX  16384   /* candidate-buffer cap (this build ~10,190 registered types) */
 void h_sh_validclasses(idCmdArgs *a)
 {
     const char *inherit = cmd_argv(a, 1);
@@ -527,17 +579,19 @@ void h_sh_validclasses(idCmdArgs *a)
         return;
     }
     sh_printf("inherit '%s' -> base type Y = '%s'; engine-valid classes (derive from Y):\n", inherit, Y);
-    int count = 0, y_in_universe = 0;
-    for (int i = 0; i < SH_CLASS_UNIVERSE_N; i++) {
-        const char *C = SH_CLASS_UNIVERSE[i];
-        int is_y = (strcmp(C, Y) == 0);
-        if (is_y) y_in_universe = 1;
-        if (is_y || sh_typeinfo_class_derives(C, Y) == 1) {   /* Y itself + every subclass of Y */
-            sh_printf("  %s\n", C);
-            count++;
-        }
+
+    static const char *names[SH_REGISTRY_MAX];       /* main-thread-serial console handler -> static is safe */
+    int count = 0, y_seen = 0;
+    int k = sh_typeinfo_collect_classnames(names, SH_REGISTRY_MAX);
+    if (k > 0) {                                       /* LIVE registry (complete + portable) */
+        for (int i = 0; i < k; i++) vc_emit(names[i], Y, &count, &y_seen);
+        if (k >= SH_REGISTRY_MAX)
+            sh_printf("  (registry list truncated at %d -- raise SH_REGISTRY_MAX)\n", SH_REGISTRY_MAX);
+    } else {                                           /* fallback: static decl-corpus candidate set */
+        sh_printf("  (live type registry unavailable -- using the static candidate set)\n");
+        for (int i = 0; i < SH_CLASS_UNIVERSE_N; i++) vc_emit(SH_CLASS_UNIVERSE[i], Y, &count, &y_seen);
     }
-    if (!y_in_universe) {   /* edge case: Y absent from the static universe -> it's still valid (derives from itself) */
+    if (!y_seen) {   /* Y itself derives from itself -- emit it if the candidate set didn't contain it */
         sh_printf("  %s\n", Y);
         count++;
     }

@@ -81,4 +81,17 @@ int sh_typeinfo_class_derives(const char *className, const char *baseName);
  * lets users morph an entity to ANY class+inherit pair the engine would accept. */
 const char *sh_typeinfo_inherit_base(const char *inheritName, char *buf, size_t cap);
 
+/* Enumerate the LIVE idlib reflection type registry -- every registered class NAME, not a frozen list.
+ * RE'd from the engine (FindTypeInfoByName 0x1A1D590 + the registry builder/registrar all iterate one array).
+ * Chain (reuses the already-wired reflect): reflect = declMgr->[+0x80]; container P = *(reflect+0); type-record
+ * array B = *(P+0x20); records stride 0x38, className char* @ rec+0x00 (NULL name terminates the array),
+ * superclass name @ rec+0x08. Collects up to `cap` className pointers (which point into engine-owned static
+ * string data -- stable for the process life) into out_names[]. Returns the count, or -1 if the registry is
+ * unreachable (reflect/container NULL -- e.g. pre-boot), so callers can fall back to a static list. The raw
+ * array walk is SEH-guarded (a shifted / garbage array degrades to whatever was collected, never a crash);
+ * filter/print in the caller. This is the portable, complete replacement for the frozen sh_entlist /
+ * sh_validclasses candidate lists -- it auto-tracks DOOM patches and surfaces valid classes that have no
+ * editor decl. */
+int sh_typeinfo_collect_classnames(const char **out_names, int cap);
+
 #endif /* BACKEND_B2_TYPEINFO_H */
