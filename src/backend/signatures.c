@@ -400,6 +400,28 @@ const sig_entry BACKEND_ENGINE_SIGNATURES[] = {
                     * Re-derive: decompile FUN_141a60c20. */
       "48 8B C4 48 81 EC A8 00 00 00 F3 0F 10 05 ?? ?? ?? ?? F3 0F 10 49 0C F3 0F 58 09",
       0x1A60C20u },
+    { "ModuleWorldToLocal", /* FUN_140554620 -- the engine's CANONICAL full 3x4 world->module-LOCAL storage
+                             * converter: void(const void *E = *(lm+0x750)+M*0x98, float out[12], const float
+                             * world[12]). translation via FUN_1405546b0, basis via FUN_140554160; output in the
+                             * entity-transform layout (+0..2 translation, +0xc.. basis). The Edit-Entity move op
+                             * FUN_1405329a0 uses it to store a dropped world position as module-local -- so it IS
+                             * the frame the engine stores + renders module entities in. Re-derive: decompile
+                             * FUN_140554620. */
+      "48 89 5C 24 20 55 56 57 48 83 EC 60 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 58",
+      0x554620u },
+    { "SetOwningModule", /* FUN_140544be0 -- set an entity's owning-module OBJECT back-ref: void(void *entBody,
+                          * void *moduleObj). `if(*(ent+0x338)!=modObj){ ent+0x160 |= 0x20; ent+0x338 = modObj; }`.
+                          * Every native module entity has this (birth FUN_1405949a0, drag commit FUN_1405d81c0) --
+                          * it + the 0x20 module-dirty bit mark the entity a SETTLED member of its module so the
+                          * per-entity refresh does not re-derive its +0x288. Re-derive: decompile FUN_140544be0. */
+      "48 39 91 38 03 00 00 74 0E 83 89 60 01 00 00 20 48 89 91 38 03 00 00",
+      0x544BE0u },
+    { "EntityFinalize", /* FUN_140544c00 -- finalize a just-created module entity: void(void *entBody, void
+                         * *moduleObj). If ent+0x350 is valid, stores the module into it + sets ent+0x160 |= 0x20.
+                         * The last step of native module birth (FUN_1405949a0) after SetOwningModule. Re-derive:
+                         * decompile FUN_140544c00. */
+      "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B D9 48 8B FA 48 81 C1 50 03 00 00",
+      0x544C00u },
     { "ConnectOutputCreator", /* FUN_140cdbb40 -- the editor wire tool's connect creator (a vtable-dispatched
                                * FSM leaf reached on the target pick). wiring_mode.c inline-detours it (Hook 2
                                * of the interactive wire-any mode): in wire-mode it records the target into the

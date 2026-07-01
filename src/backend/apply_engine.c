@@ -104,6 +104,9 @@
 #define VIEW_FORWARD_RVA       0x1a6ac60u  /* ViewForward FUN_141a6ac60 -- camera aim dir from editor+0x17c angles */
 #define MODULE_CONTAIN_XFORM_RVA 0x5546b0u /* ModuleContainTransform FUN_1405546b0 -- world->module-local (OBB frame) */
 #define SEG_VS_AABB_RVA        0x1a60c20u  /* SegVsAabb FUN_141a60c20 -- segment/point vs module OBB */
+#define MODULE_W2L_FULL_RVA    0x554620u   /* ModuleWorldToLocal FUN_140554620 -- full 3x4 world->module-local */
+#define SET_OWNING_MODULE_RVA  0x544be0u   /* SetOwningModule FUN_140544be0 -- entity+0x338 owning-module obj */
+#define ENTITY_FINALIZE_RVA    0x544c00u   /* EntityFinalize FUN_140544c00 -- finalize a new module entity */
 
 /* ============================================================ apply-chain struct sizes ============== */
 /* DIRECT from the XINPUT1_3 FUN_180004b80 / FUN_180004950 / FUN_1800044a0 decompiles + the engine ctors
@@ -171,6 +174,9 @@ typedef void *(*world_to_local_fn)(void *modtbl, float *out, int mi, const float
 typedef float *(*view_forward_fn)(const void *angles, float *out);                        /* ViewForward 0x1a6ac60 */
 typedef void  (*module_contain_xform_fn)(const void *tblEntry, float *out, const float *world); /* ModuleContainTransform 0x5546b0 */
 typedef char  (*seg_vs_aabb_fn)(const float *aabb6, const float *a, const float *b);      /* SegVsAabb 0x1a60c20 */
+typedef void  (*module_w2l_full_fn)(const void *E, float *out12, const float *world12);   /* ModuleWorldToLocal 0x554620 */
+typedef void  (*set_owning_module_fn)(void *entBody, void *moduleObj);                    /* SetOwningModule 0x544be0 */
+typedef void  (*entity_finalize_fn)(void *entBody, void *moduleObj);                      /* EntityFinalize 0x544c00 */
 
 /* ============================================================ module state (resolved once) ========== */
 static const uint8_t      *g_doom_base   = NULL;
@@ -200,6 +206,9 @@ static world_to_local_fn   g_world_to_local = NULL;      /* world->module-local 
 static view_forward_fn     g_view_forward = NULL;        /* camera aim direction (spatial spawn-module resolve) */
 static module_contain_xform_fn g_module_contain_xform = NULL; /* world->module-local for OBB containment */
 static seg_vs_aabb_fn      g_seg_vs_aabb = NULL;         /* point/segment-in-module-OBB test */
+static module_w2l_full_fn  g_module_w2l_full = NULL;     /* full 3x4 world->module-local (native-birth position) */
+static set_owning_module_fn g_set_owning_module = NULL;  /* set entity+0x338 owning-module obj (settled member) */
+static entity_finalize_fn  g_entity_finalize = NULL;     /* finalize a just-created module entity */
 static volatile LONG       g_installed   = 0;
 static volatile LONG       g_cmd_registered = 0;   /* clone_bss_apply registered once (lazy) */
 
@@ -660,24 +669,27 @@ static int ae_active_module_for_spawn(const uint8_t *ed, const void *lm)
     return -1;                                          /* leave it global (always save-safe) */
 }
 
-/* Re-base the just-spawned (now-selected) entities from a WORLD grab position into module M's LOCAL frame.
- * PasteInstantiate stores a WORLD transform (correct for the global bucket), but a module entity's position is
- * stored module-LOCAL and the render composes the module transform M back onto it -- so a raw world value in
- * bucket M renders at M*world, way outside the module (live-proven). The correct stored value is M^-1 * world.
- * Use ModuleContainTransform (FUN_1405546b0 = rawMatrix^-1 * world -- the SAME world->local the editor pick feeds
- * into the module OBB test, so it IS the entity storage frame), NOT WorldToModuleLocal (FUN_1405a8be0/FUN_140554fe0
- * = rawMatrix * world, the INVERSE direction -- that drove the misplacement that GREW with module distance; the
- * two differ by one matrix inverse FUN_141a82c70). TRANSLATION only: the basis is left world-oriented (exact for an
- * axis-aligned module; a rotated module leaves a cosmetic icon-orientation delta). The SPAWN branch had nothing
- * selected before the paste, so the selection now IS the new entity set. All reads SEH-guarded; a fault leaves the
- * entity as-is. No-op unless anchored to a real module AND the transform resolved. */
-static void ae_rebase_selection_to_module(const uint8_t *ed, void *lm, int M)
+/* Finalize the just-spawned (now-selected) entities as proper MODULE members -- a faithful replica of native
+ * module-entity birth (FUN_1405949a0), which does per entity: register into M -> set +0x288 module-LOCAL ->
+ * SetOwningModule (+0x338) -> Finalize. Our temp-swap already registered into bucket M and PasteInstantiate left
+ * a WORLD transform at +0x288; here we (1) convert that world transform to the module's LOCAL frame with the
+ * engine's OWN canonical converter ModuleWorldToLocal (FUN_140554620, full 3x4), (2) set the owning-module OBJECT
+ * back-ref +0x338 via SetOwningModule (FUN_140544be0), (3) Finalize via FUN_140544c00. Steps 2+3 are what EVERY
+ * native module entity has and our earlier attempts OMITTED -- without them the engine's per-entity refresh
+ * (FUN_140595fb0) re-derives +0x288 and clobbers any hand-computed position (why attempts 1-3 all misplaced even
+ * when the local math was right). With them the entity is a "settled member" indistinguishable from a native
+ * module entity, so it renders + saves at the correct in-module position. moduleObj = *(*(E)) (the module object
+ * whose OBB the spatial pick reads). The SPAWN branch had nothing selected pre-paste, so the selection now IS the
+ * new entity set. All reads SEH-guarded. No-op unless anchored to a real module AND the engine fns resolved. */
+static void ae_finalize_module_birth(const uint8_t *ed, void *lm, int M)
 {
-    if (!g_module_contain_xform || M < 0) return;
-    void *sel = NULL, *ids = NULL, *arr = NULL, *tblBase = NULL;
+    if (!g_module_w2l_full || !g_set_owning_module || !g_entity_finalize || M < 0) return;
+    void *sel = NULL, *ids = NULL, *arr = NULL, *tblBase = NULL, *p1 = NULL, *modObj = NULL;
     int count = 0;
     if (!ae_read_ptr((const uint8_t *)lm + LM_MODXFORM_OFF, &tblBase) || tblBase == NULL) return;
     const uint8_t *E = (const uint8_t *)tblBase + (size_t)M * MOD_TBL_STRIDE;   /* module M's transform-table entry */
+    if (!ae_read_ptr(E, &p1) || p1 == NULL) return;
+    if (!ae_read_ptr(p1, &modObj) || modObj == NULL) return;                    /* moduleObj = *(*(E)) */
     if (!ae_read_ptr(ed + ED_SEL_OBJ_OFF, &sel) || sel == NULL) return;
     if (!ae_read_u32_safe((const uint8_t *)sel + SEL_COUNT_OFF, &count) || count <= 0) return;
     if (!ae_read_ptr((const uint8_t *)sel + SEL_IDS_OFF, &ids) || ids == NULL) return;
@@ -688,18 +700,19 @@ static void ae_rebase_selection_to_module(const uint8_t *ed, void *lm, int M)
         void *ent = NULL;
         if (!ae_read_ptr((const uint8_t *)arr + (size_t)id * 8, &ent) || ent == NULL) continue;
         __try {
-            float *xf = (float *)((uint8_t *)ent + ENT_XFORM_OFF);
-            float world[3] = { xf[0], xf[1], xf[2] };
-            float local[3] = { 0.0f, 0.0f, 0.0f };
-            g_module_contain_xform((const void *)E, local, world);   /* world -> module-M-local (M^-1 * world) */
-            xf[0] = local[0]; xf[1] = local[1]; xf[2] = local[2];
-            *(volatile uint32_t *)((uint8_t *)ent + ENT_DIRTY_OFF) |= 3u;   /* force a transform re-render */
-            { char ln[152]; _snprintf_s(ln, sizeof ln, _TRUNCATE,
-                "create-timeline: rebase id=%d M=%d world=(%.1f,%.1f,%.1f) -> local=(%.1f,%.1f,%.1f)",
+            float world[12], local[12];
+            memcpy(world, (const uint8_t *)ent + ENT_XFORM_OFF, sizeof world);   /* the world grab transform */
+            g_module_w2l_full((const void *)E, local, world);                    /* full 3x4 world -> module-M-local */
+            memcpy((uint8_t *)ent + ENT_XFORM_OFF, local, sizeof local);          /* store the module-local transform */
+            *(volatile uint32_t *)((uint8_t *)ent + ENT_DIRTY_OFF) |= 3u;         /* transform dirty (as FUN_140545040) */
+            g_set_owning_module(ent, modObj);   /* +0x338 = moduleObj + dirty|=0x20 -- the "settled member" mark */
+            g_entity_finalize(ent, modObj);     /* finalize +0x350 + dirty|=0x20 (last step of native birth) */
+            { char ln[168]; _snprintf_s(ln, sizeof ln, _TRUNCATE,
+                "create-timeline: native-birth id=%d M=%d world=(%.1f,%.1f,%.1f) -> local=(%.1f,%.1f,%.1f) +modobj+finalize",
                 id, M, (double)world[0], (double)world[1], (double)world[2],
                 (double)local[0], (double)local[1], (double)local[2]); backend_log(ln); }
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) { backend_log("create-timeline: rebase SEH (entity transform)"); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { backend_log("create-timeline: native-birth SEH (entity finalize)"); }
     }
 }
 
@@ -713,10 +726,11 @@ static void ae_rebase_selection_to_module(const uint8_t *ed, void *lm, int M)
  * instead files into the GLOBAL bucket, whose index is read from *(lm+0x758) (the module count) inside the
  * register wrapper -- the SOLE reader of that field during the entire paste. So to make the SPAWN land in the
  * active module M we point *(lm+0x758) at M for the duration of the call and restore it immediately after
- * (swap-safe: nothing else in the paste reads +0x758). PasteInstantiate then places at a WORLD grab transform --
- * but a module entity's position is stored + rendered module-origin-RELATIVE, so the world value must be re-based
- * into module M's local frame afterward (ae_rebase_selection_to_module) or it renders at moduleOrigin+world, way
- * outside the module (live-proven). M<0 / out-of-range => the spawn stays GLOBAL, unchanged (no re-base).
+ * (swap-safe: nothing else in the paste reads +0x758). PasteInstantiate then places at a WORLD grab transform,
+ * but a module entity is stored module-LOCAL AND must be a "settled member" (owning-module back-ref +0x338 +
+ * finalize) or the engine's per-entity refresh re-derives + clobbers its +0x288 -- so afterward we replicate
+ * native module birth via ae_finalize_module_birth (world->local + SetOwningModule + Finalize). M<0 / out-of-range
+ * => the spawn stays GLOBAL, unchanged (no finalize).
  * Class-independent: ANY spawned inherit/classname is anchored, not just timelines. SEH-guarded (a garbage slot /
  * map-not-loaded would AV in the engine); the restore always runs. Returns 1 iff staged AND instantiate fired. */
 static int ae_mkcmd_instantiate_one(const char *prefab_text)
@@ -739,7 +753,7 @@ static int ae_mkcmd_instantiate_one(const char *prefab_text)
     __try { g_paste_instantiate(staging, (void *)ed); ok = 1; }
     __except (EXCEPTION_EXECUTE_HANDLER) { backend_log("create-timeline: PasteInstantiate SEH (slot/map not ready?)"); ok = 0; }
     if (anchor) *modcnt = saved;                       /* ALWAYS restore the true module count */
-    if (anchor && ok) ae_rebase_selection_to_module(ed, lm, M);  /* world grab -> module M's local frame (position-correct) */
+    if (anchor && ok) ae_finalize_module_birth(ed, lm, M);  /* make it a proper module member (local xform + owning-module + finalize) */
 
     char line[96];
     _snprintf_s(line, sizeof line, _TRUNCATE, "create-timeline: instantiate module=%d (anchor=%d)", M, anchor);
@@ -1028,6 +1042,9 @@ int sh_apply_engine_install(const sig_result *results, size_t n, const uint8_t *
     g_view_forward      = (view_forward_fn)      sig_addr_by_name(results, n, "ViewForward");
     g_module_contain_xform = (module_contain_xform_fn) sig_addr_by_name(results, n, "ModuleContainTransform");
     g_seg_vs_aabb       = (seg_vs_aabb_fn)       sig_addr_by_name(results, n, "SegVsAabb");
+    g_module_w2l_full   = (module_w2l_full_fn)   sig_addr_by_name(results, n, "ModuleWorldToLocal");
+    g_set_owning_module = (set_owning_module_fn) sig_addr_by_name(results, n, "SetOwningModule");
+    g_entity_finalize   = (entity_finalize_fn)   sig_addr_by_name(results, n, "EntityFinalize");
 
     /* the prefab-from-selection serialize engine fns (+0xb0). These jumptable/inline-prone leaves
      * resolve by FALLBACK RVA off module_base (re-derive-tagged like the editor singleton); a wrong/shifted
@@ -1043,6 +1060,9 @@ int sh_apply_engine_install(const sig_result *results, size_t n, const uint8_t *
         if (!g_view_forward)        g_view_forward = (view_forward_fn)(module_base + VIEW_FORWARD_RVA);
         if (!g_module_contain_xform) g_module_contain_xform = (module_contain_xform_fn)(module_base + MODULE_CONTAIN_XFORM_RVA);
         if (!g_seg_vs_aabb)         g_seg_vs_aabb = (seg_vs_aabb_fn)(module_base + SEG_VS_AABB_RVA);
+        if (!g_module_w2l_full)     g_module_w2l_full = (module_w2l_full_fn)(module_base + MODULE_W2L_FULL_RVA);
+        if (!g_set_owning_module)   g_set_owning_module = (set_owning_module_fn)(module_base + SET_OWNING_MODULE_RVA);
+        if (!g_entity_finalize)     g_entity_finalize = (entity_finalize_fn)(module_base + ENTITY_FINALIZE_RVA);
     }
 
     char line[256];
