@@ -44,6 +44,10 @@
  * SAME the apply (FUN_180004b80) + serialize (FUN_1800044a0) resolve. */
 #define EDITOR_SINGLETON_RVA   0x3056748u   /* module_base + this = the inline idSnapEditorLocal object */
 #define ED_MAP_OBJ_OFF         0x204c8      /* editor+0x204c8 -> loaded-map object ptr (null off-editor) */
+#define ED_SEL_OBJ_OFF         0x204d0      /* editor+0x204d0 -> selection object ptr */
+#define SEL_HOVERED_OFF        0x2c         /* selObj+0x2c -> looked-at/hovered entity id (-1 = none) */
+#define LM_ENTINST_ARR_OFF     0x6f0        /* loaded-map+0x6f0 -> per-entity instance(module)-index array (s32[id]) */
+#define LM_INSTANCES_CNT_OFF   0x758        /* loaded-map+0x758 -> module COUNT (== the global/no-module sentinel bucket) */
 #define ARR_ENT_ARRAY_OFF      0x6a0        /* arrObj+0x6a0 -> entity-ptr array (8-byte entries) */
 #define ARR_ENT_COUNT_OFF      0x6a8        /* arrObj+0x6a8 -> entity count (u32) */
 #define ENT_VALID_OFF          0x8          /* entity[id]+8 != 0 => valid; ALSO the clone base (ent+8) */
@@ -543,13 +547,52 @@ static int ae_mkcmd_one(const char *prefab_text)
     return ae_deserialize_to_obj(prefab_text, staging, "idSnapEntityPrefab");
 }
 
+/* the entity's module index (an inline of the iface reader): the engine stores each entity's instance(module)
+ * index at *(*(lm+0x6f0)+id*4); a global/no-module entity carries instanceIdx == the module COUNT (lm+0x758).
+ * Returns the real module index, or -1 for global. SEH-guarded -- a stale offset yields -1, never a crash. */
+static int ae_id_module_index(const uint8_t *lm, uint32_t id)
+{
+    void *idxArr = NULL; int instIdx = 0, modCnt = 0;
+    if (!ae_read_ptr(lm + LM_ENTINST_ARR_OFF, &idxArr) || idxArr == NULL) return -1;
+    if (!ae_read_u32_safe((const uint8_t *)idxArr + (size_t)id * 4, &instIdx)) return -1;
+    if (!ae_read_u32_safe(lm + LM_INSTANCES_CNT_OFF, &modCnt) || modCnt <= 0) return -1;
+    return (instIdx >= 0 && instIdx < modCnt) ? instIdx : -1;   /* instIdx == modCnt => global */
+}
+
+/* the module a create-from-scratch SPAWN should belong to. The SPAWN path fires only when nothing is selected,
+ * so the new entity lands at the camera inside the module being edited. Best-effort source, in order: a
+ * single-module map has exactly one module (index 0); otherwise the last looked-at entity's module (the cursor
+ * sits over the module being worked in); otherwise -1 => leave it global. A wrong/absent module only affects
+ * the organizational bucket + the ID label, never correctness (the transform is world-absolute either way). */
+static int ae_active_module_for_spawn(const uint8_t *ed, const void *lm)
+{
+    int modCnt = 0;
+    if (!ae_read_u32_safe((const uint8_t *)lm + LM_INSTANCES_CNT_OFF, &modCnt) || modCnt <= 0) return -1;
+    if (modCnt == 1) return 0;                          /* single-module map: the only module */
+    void *sel = NULL;
+    if (ae_read_ptr(ed + ED_SEL_OBJ_OFF, &sel) && sel) {
+        int hov = -1;
+        if (ae_read_u32_safe((const uint8_t *)sel + SEL_HOVERED_OFF, &hov) && hov >= 0)
+            return ae_id_module_index((const uint8_t *)lm, (uint32_t)hov);
+    }
+    return -1;                                          /* leave it global (always save-safe) */
+}
+
 /* kind=2: stage the prefab into editor+0x209a8 (like mkcmd) THEN paste-INSTANTIATE it (engine PasteInstantiate
- * FUN_14054f950) so it is actually PLACED in the live map -- the create-from-scratch timeline SPAWN. Plain mkcmd
- * stays kind=1 (stage-only, OG-faithful: the user Ctrl+V's it). PasteInstantiate reads editor+0x209a8,
- * instantiates+registers each entity + AddToSelection's it, at a camera-relative grab transform; it does NOT
- * consume the slot, so we call it ONCE per staged prefab (each schedule re-stages a fresh prefab -> no
- * double-place). SEH-guarded (a garbage slot / map-not-loaded would AV in the engine). Returns 1 iff staged AND
- * instantiate fired. RE'd DIRECT from our own decompile. */
+ * FUN_14054f950) so it is actually PLACED in the live map -- the create-from-scratch SPAWN. Plain mkcmd stays
+ * kind=1 (stage-only: the user Ctrl+V's it). PasteInstantiate reads editor+0x209a8, instantiates + registers
+ * each entity + AddToSelection's it, at a camera-relative grab transform; it does NOT consume the slot, so we
+ * call it ONCE per staged prefab.
+ *
+ * BIRTH-IN-MODULE: a normally-placed entity is registered into the module it is dropped in; PasteInstantiate
+ * instead files into the GLOBAL bucket, whose index is read from *(lm+0x758) (the module count) inside the
+ * register wrapper -- the SOLE reader of that field during the entire paste. So to make the SPAWN land in the
+ * active module M we point *(lm+0x758) at M for the duration of the call and restore it immediately after.
+ * PROVEN position-correct + swap-safe by our own decompile: the entity transform (+0x288) is world-absolute for
+ * EVERY bucket (render/save/load never fold it by the module index, so no re-base is needed), and nothing else
+ * in the paste reads +0x758. M<0 / out-of-range => the spawn stays GLOBAL, unchanged. Class-independent: ANY
+ * spawned inherit/classname is anchored, not just timelines. SEH-guarded (a garbage slot / map-not-loaded would
+ * AV in the engine); the restore always runs. Returns 1 iff staged AND instantiate fired. */
 static int ae_mkcmd_instantiate_one(const char *prefab_text)
 {
     const uint8_t *ed = ae_editor_session();
@@ -557,9 +600,23 @@ static int ae_mkcmd_instantiate_one(const char *prefab_text)
     if (!ae_mkcmd_one(prefab_text)) return 0;          /* stage the clean prefab into editor+0x209a8 first */
     if (!g_paste_instantiate) { backend_log("create-timeline: PasteInstantiate unresolved -- staged only"); return 0; }
     void *staging = (void *)(ed + PASTE_STAGING_OFF);
+
+    void *lm = NULL;
+    if (!ae_read_ptr(ed + ED_MAP_OBJ_OFF, &lm) || lm == NULL) { backend_log("create-timeline: no loaded map"); return 0; }
+    int M = ae_active_module_for_spawn(ed, lm);
+    volatile uint32_t *modcnt = (volatile uint32_t *)((uint8_t *)lm + LM_INSTANCES_CNT_OFF);
+    uint32_t saved = 0;
+    int anchor = (ae_read_u32((const void *)modcnt, &saved) && M >= 0 && (uint32_t)M < saved);
+
     int ok = 0;
+    if (anchor) *modcnt = (uint32_t)M;                 /* the register wrapper reads THIS as the bucket key */
     __try { g_paste_instantiate(staging, (void *)ed); ok = 1; }
     __except (EXCEPTION_EXECUTE_HANDLER) { backend_log("create-timeline: PasteInstantiate SEH (slot/map not ready?)"); ok = 0; }
+    if (anchor) *modcnt = saved;                       /* ALWAYS restore the true module count */
+
+    char line[96];
+    _snprintf_s(line, sizeof line, _TRUNCATE, "create-timeline: instantiate module=%d (anchor=%d)", M, anchor);
+    backend_log(line);
     return ok;
 }
 
