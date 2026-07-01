@@ -140,10 +140,6 @@ struct ShWinController {
     std::string   last_synced_displayname; /* the LIVE displayname last pushed into the box -- read-sync overwrites
                                           * ONLY on a real live change, NOT when the user types a new name (else the
                                           * typed edit is clobbered on focus-out before Save can capture it). */
-    std::string   last_idbox_class;      /* the classname the read-only ID box was last built for -- the id-string
-                                          * embeds the class suffix, so a MORPH (class changes, id stays) must
-                                          * re-render the box or it shows a stale/misleading class. Recompute only
-                                          * when id OR class changes (not per-frame -- the id-string does a module scan). */
     std::string   last_desc_key;         /* CLONE EXTENSION: the (inherit\x1fclass) last rendered into the
                                           * Entity-Description box -- es_set_desc no-ops when unchanged. */
     std::string   last_class_combo_inherit; /* CLONE EXTENSION: the inherit the class dropdown was last

@@ -522,17 +522,15 @@ static void entity_state_read_sync(ShWinController *win)
             win->last_synced_displayname = live;
         }
     }
-    if (idl) {   /* gate on id change OR a class change: the id-string does a module-path resolve (a loaded-map
-                  * scan) that's the per-frame perf hit, so DON'T recompute every frame -- but a MORPH keeps the
-                  * id while changing the className the id-string embeds, so we'd otherwise show a stale class
-                  * (the "ID mismatch" a user can misread as corruption). The classname read here is the cheap
-                  * defsub+0x60 read; the expensive id-string recompute fires only when id or class actually flips. */
-        std::string liveCls = iface_classname(iface, id);
-        if (id_changed || liveCls != win->last_idbox_class) {
-            QString live = QString::fromStdString(iface_id_string(iface, id));   /* read-only */
-            if (idl->text() != live) idl->setText(live);
-            win->last_idbox_class = liveCls;
-        }
+    if (idl) {   /* Compare the RESOLVED id-string DIRECTLY rather than via a classname proxy. The string embeds
+                  * the module path, and dragging an entity into a different module RE-BUCKETS it without changing
+                  * its id or className -- so the old classname-proxy gate went stale on a module change (the field
+                  * kept showing the pre-move / "(no module)" value even though the entity list refreshed to the new
+                  * module). id_to_string is an O(1) struct-walk (a few derefs + snprintf, no scan despite the old
+                  * note), so recomputing it each frame for the ONE selected entity is negligible, and the read-only
+                  * widget is touched only on an actual change (id, class, OR module). */
+        QString live = QString::fromStdString(iface_id_string(iface, id));   /* read-only; embeds class + module */
+        if (idl->text() != live) idl->setText(live);
     }
 
     /* GRAY-OUT: disable "Save to Decl" when the panel has NO unsaved edits -- every editable widget already
