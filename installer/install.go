@@ -132,7 +132,14 @@ func cmdUpdate(f flags) error {
 		f.doom = rec.DoomPath
 	}
 	fmt.Printf("Updating SnapHak in %s (current: %s)\n", rec.DoomPath, rec.Version)
-	return cmdInstall(f)
+	if err := cmdInstall(f); err != nil {
+		return err
+	}
+	// The overlay is updated; now refresh snaphak.exe itself (best-effort -- never fails the overlay update).
+	if !f.noSelf {
+		selfUpdate(f, resolveToken(f))
+	}
+	return nil
 }
 
 func cmdUninstall(f flags) error {

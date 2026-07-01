@@ -19,7 +19,7 @@ func usage() {
 
 Usage:
   snaphak install   [--doom <path>] [--local <dist-dir>] [--release <tag>] [--beta] [--yes]
-  snaphak update    [--doom <path>] [--release <tag>] [--beta] [--yes]
+  snaphak update    [--doom <path>] [--release <tag>] [--beta] [--no-self] [--yes]
   snaphak uninstall [--doom <path>] [--yes]
   snaphak changelog
   snaphak status
@@ -33,6 +33,7 @@ Options:
                       downloading a release.
   --release <tag>     Install a specific release version instead of the latest.
   --beta              Install the latest beta (pre-release) instead of the latest stable.
+  --no-self           With "update": don't also update snaphak.exe itself (overlay only).
   --yes, -y           Skip the "are you sure?" confirmation (for scripts / automation).
 
 With no --local, install/update download from GitHub. Uninstall restores any files it
@@ -41,6 +42,7 @@ replaced and leaves your %USERPROFILE%\snaphak data untouched.
 }
 
 func main() {
+	cleanupSelfUpdateLeftovers() // remove any snaphak.exe.old a prior self-update left behind
 	if len(os.Args) < 2 {
 		// no args = a double-click -> the friendly interactive install (auto-detect, confirm, pause)
 		interactiveInstall()
@@ -86,6 +88,7 @@ type flags struct {
 	beta    bool
 	token   string
 	yes     bool
+	noSelf  bool // with `update`: skip refreshing snaphak.exe itself
 }
 
 // parseFlags is a tiny "--key value" parser (the tool's option surface is small + fixed).
@@ -110,6 +113,8 @@ func parseFlags(a []string) flags {
 			}
 		case "--beta":
 			f.beta = true
+		case "--no-self":
+			f.noSelf = true
 		case "--yes", "-y":
 			f.yes = true
 		case "--token":
