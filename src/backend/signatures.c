@@ -370,18 +370,29 @@ const sig_entry BACKEND_ENGINE_SIGNATURES[] = {
       0x54F950u },
     { "WireConnectCreator1", /* FUN_140cdb990 -- the editor wire tool's connect creator for an OUTPUT-NODE
                               * source (the pick processor's creator-selector 1, vs cdbb40's selector 0 for a
-                              * base-entity source). wiring_direct.c inline-detours it: while sh_target_any is in
-                              * the reveal state it forces the direct source->target edge for ANY target
-                              * (including a node-less target the stock creator would node-mediate = the "which
-                              * input" radial). ABI: void(tool, world, idx[int]); world+0x204c8 = the editor
-                              * entity table. Unique @ a 52-byte body: the generic save prologue + MOVSXD RDI,R8D
-                              * (49 63 F8 -- distinct from the 3 sibling creators cdb610/cdb860/cdbb40) + the
-                              * source/world deref chain (world+0x204c8 -> +0x6a0 -> entity, TEST +0x164,0x20);
-                              * the 4 wildcard bytes are the rel32 jz disp (build-volatile). Re-derive (per DOOM
-                              * build): decompile FUN_140cdb990. */
+                              * base-entity source). wiring_cleandirect.c detours it: while sh_target_any is in
+                              * the reveal state it transiently flags the hovered target an input-node
+                              * (decl+0x3cd bit 0x10) so the STOCK creator takes its own clean-direct branch --
+                              * binding the wire to the target ENTITY, no "which input" radial, no node
+                              * mediation -- then restores the flag. ABI: void(tool, world, idx[int]);
+                              * world+0x204c8 = the editor entity table. Unique @ a 52-byte body: the generic
+                              * save prologue + MOVSXD RDI,R8D (49 63 F8 -- distinct from the 3 sibling creators
+                              * cdb610/cdb860/cdbb40) + the source/world deref chain (world+0x204c8 -> +0x6a0 ->
+                              * entity, TEST +0x164,0x20); the 4 wildcard bytes are the rel32 jz disp
+                              * (build-volatile). Re-derive (per DOOM build): decompile FUN_140cdb990. */
       "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 49 63 F8 48 8B F2 48 8B D9 83 FF FF "
       "0F 84 ?? ?? ?? ?? 48 8B 8A C8 04 02 00 48 8B 81 A0 06 00 00 48 8B 04 F8 F6 80 64 01 00 00 20",
       0xCDB990u },
+    { "ConnectOutputCreator", /* FUN_140cdbb40 -- the editor wire tool's connect creator for a BASE-entity
+                               * source (the pick processor's creator-selector 0). wiring_cleandirect.c detours
+                               * it the same way (transient input-node flag -> the STOCK clean-direct branch
+                               * binds the wire to the target entity, no node mediation, no radial). ABI:
+                               * void(tool, world, idx[int]). Unique @ 34-byte prologue (3 reg-saves + MOV
+                               * R9,[RDX+0x204c8] + MOVSXD R10,[RCX+0x10] -- distinct from the 3 sibling
+                               * creators). Re-derive: decompile FUN_140cdbb40. */
+      "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 "
+      "4C 8B 8A C8 04 02 00 48 8B EA 4C 63 51 10",
+      0xCDBB40u },
     { "Toast",
       "40 57 48 83 EC 20 48 8B F9 48 8B 89 F0 08 00 00",
       0xCFA0B0u },

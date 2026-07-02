@@ -33,7 +33,7 @@
 #include "patch.h"
 #include "algo.h"
 #include "target_any.h"   /* sh_target_any editor-decl visibility toggle (OG FUN_180021EE0 port) */
-#include "wiring_direct.h" /* sh_target_any direct-edge wire hook (output-node source -> any target) */
+#include "wiring_cleandirect.h" /* sh_target_any wire-any: force the stock clean-direct connect branch (bind to any target ENTITY, no input radial) */
 #include "ui_bridge.h"
 #include "iface_engine.h"
 #include "apply_engine.h"
@@ -319,11 +319,12 @@ static DWORD WINAPI bootstrap_thread(LPVOID p)
          * sh_commands CMD_TABLE. Pair-for-pair port of OG SnapHak's sh_target_any (FUN_180021EE0). */
         sh_target_any_install(get_decls);
 
-        /* sh_target_any direct-edge hook: resolve the editor wire tool's output-node-source connect creator
-         * (cdb990) by signature and install a flag-gated inline detour that forces a direct source->target
-         * edge (no input radial) while sh_target_any is in the reveal state. Off until then; frees no node;
-         * never touches the tool's think/input state. */
-        sh_wiring_direct_install(g_doom_base);
+        /* sh_target_any wire-any (clone improvement over the original): detour the editor wire tool's two
+         * connect creators (cdbb40/cdb990) so, while sh_target_any is revealed, a target that would raise the
+         * "which input?" radial picker instead takes the tool's own clean-direct branch -- binding the wire to
+         * the target ENTITY, no picker, no node mediation. Transient-flag technique; forces no slots, frees no
+         * node (so none of the placeholder / stray-wire / "(no module)" artifacts). Off until reveal. */
+        sh_wiring_cleandirect_install(g_doom_base);
     }
 
     /* FAULT-SHIELD (merged 2026-06-22): install the recover-in-place shield -- a first-in-chain VEH +

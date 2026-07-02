@@ -25,8 +25,8 @@ void sh_target_any_install(void *get_decls_of_type);
  * the console-command table. */
 void h_target_any(struct idCmdArgs *a);
 
-/* 1 while sh_target_any is in the REVEAL state (visible), 0 while hidden. Read by the direct-edge wire hook
- * (wiring_direct.c) so it forces a direct source->target edge only while sh_target_any is on. */
+/* 1 while sh_target_any is in the REVEAL state (visible), 0 while hidden. Read by the wire-any connect-tool
+ * detours (wiring_cleandirect.c) so they take the clean-direct branch only while sh_target_any is on. */
 int sh_target_any_is_shown(void);
 
 #endif /* BACKEND_TARGET_ANY_H */
