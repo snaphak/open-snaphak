@@ -237,8 +237,9 @@ static void iface_toast(sh_iface *iface, const char *title, const char *text)
 /* ================================================================ ENTITIES tab =====================
  * Port of FUN_1800147e8 (per-id list populate), called in a count loop by FUN_180014e7c's |1/|8 rebuild.
  * Per id: resolve id->string; skip names starting "NULL_"; if classname is idTarget_Timeline /
- * idEncounterManager ALSO add to the Timelines list; if HideBuiltin checked skip id <= 0x37; else apply the
- * substring filter (the line_edit_entity_filter text) + addItem. The item's data role 0x30 carries the id. */
+ * idEncounterManager ALSO add to the Timelines list; skip dev-layer-hidden entities (the snapEdit_enableDevLayer
+ * gate); apply the substring filter (the line_edit_entity_filter text) + addItem. The item's data role 0x30
+ * carries the id. (OG's "Hide Builtin Snap Objects" checkbox + its id<=0x37 skip were removed -- see below.) */
 
 /* OG stores the id at QListWidgetItem+0x30 via setData; we use Qt::UserRole. */
 static const int SH_ITEM_ID_ROLE = 0x100;   /* Qt::UserRole (32) base; any custom role >= UserRole works */
@@ -282,10 +283,8 @@ static void populate_one_entity(ShWinController *win, sh_iface *iface, int id)
         }
     }
 
-    /* HideBuiltin: when checked, skip ids <= 0x37 (builtins are 0..55). */
-    QCheckBox *hide = static_cast<QCheckBox *>(WUI(SH_UI_hide_builtin_checkbox));
-    bool hideBuiltin = hide && hide->isChecked();
-    if (hideBuiltin && id <= 0x37) return;
+    /* (The OG "Hide Builtin Snap Objects" checkbox + its id<=0x37 builtin skip were REMOVED -- the
+     * `snapEdit_enableDevLayer` cvar dev-layer gate above is now the single visibility mechanism.) */
 
     /* OG (FUN_1800147e8) appends ":<displayName>" to the id-string when the entity has a name (the +0x70
      * get_displayname_ptr slot), and labels/filters the COMBINED string -> the list shows the entity name
@@ -744,6 +743,17 @@ void sh_prefab_list_populate(ShWinController *win)
 void sh_timeline_item_double_clicked(ShWinController *win, int id)
 {
     if (!win) return;
+    /* Refuse a STALE row. If the timeline entity was deleted from the map, its list row can linger briefly (the
+     * list auto-prunes on the validity-change poll, but a double-click can race that). Opening a dead id would
+     * build a PHANTOM editor (sh_timeline_open sets entity_id = -1 for an invalid id) the user could author events
+     * into, only to hit "no committable timeline (unresolved id)" on save -- and the dead row would stay. Instead:
+     * toast + force a rebuild so the stale row drops. (The internal Create-New open path passes a live host id, so
+     * this guards ONLY the user-driven list double-click.) */
+    if (!iface_is_valid_id(win->iface, id)) {
+        iface_toast(win->iface, "Timeline", "That timeline no longer exists (it was deleted). Refreshing the list.");
+        win->flagword |= SH_FLAG_REBUILD_LIST;
+        return;
+    }
     /* C3b: the OG FUN_180017444 stashes the chosen id onto the Timeline-Editor's deferred-load slot
      * (TL+0x1d0) + switches to tab 5, then a load repopulates the editor. The clone OPENs the editor
      * directly on the clicked id (sh_timeline_open builds the TL QTabWidget, caches the id + iface, COLLECTs
@@ -837,13 +847,20 @@ void sh_dispatch_flagword(ShWinController *win)
         }
     }
 
-    /* AUTO-POPULATE the entity list on map load. entity_count goes 0 -> N when a map loads (and changes on
-     * add/delete); a real change raises |1 so the list fills itself instead of requiring a manual Refresh.
-     * Change-gated (cnt != last) so it fires once per change, never per frame. */
+    /* AUTO-POPULATE / auto-PRUNE the lists. entity_count goes 0 -> N on map load and rises on an ADD; a change
+     * raises |1 so the list fills without a manual Refresh. A DELETE, however, does NOT shrink entity_count -- the
+     * freed slot stays (ids are stable indices into arrObj+0x6a8), so a deleted entity would linger in the
+     * Entities + Timelines lists as a stale, openable row (the reported timeline-stability bug). So ALSO track the
+     * count of VALID entities: a delete lowers it while the raw count is unchanged -> rebuild, and populate_one_entity
+     * skips the now-invalid id, dropping the dead entity from both lists. Both change-gated -> once per change. */
     {
         int cnt = iface_entity_count(iface);
-        if (cnt != win->last_entity_count) {
+        int valid = 0;
+        for (int id = 0; id < cnt; id++)
+            if (iface_is_valid_id(iface, id)) valid++;
+        if (cnt != win->last_entity_count || valid != win->last_valid_count) {
             win->last_entity_count = cnt;
+            win->last_valid_count  = valid;
             win->flagword |= SH_FLAG_REBUILD_LIST;
         }
     }
@@ -855,6 +872,20 @@ void sh_dispatch_flagword(ShWinController *win)
     if (win->spawn_rebuild_frames > 0) {
         win->spawn_rebuild_frames--;
         if ((win->spawn_rebuild_frames % 15) == 0) win->flagword |= SH_FLAG_REBUILD_LIST;
+    }
+
+    /* QOL: wire-any auto-settle. The backend bumps iface->vtbl->wire_edit_generation (+0x288) on each
+     * sh_target_any wire connect edit. A wire connect nets NO entity_count/valid_count change, so the count-
+     * poll above never rebuilds -> the connected chain (source / its output node / target) keeps its stale
+     * "(no module)" labels until a manual Refresh. When the generation changes, open a re-scan window like the
+     * spawn case; the ~0.75s tail outlasts the drag so the SETTLED module names are what re-read. */
+    if (iface && iface->vtbl && iface->vtbl->wire_edit_generation) {
+        int gen = iface->vtbl->wire_edit_generation(iface);
+        if (gen != win->last_wire_gen) { win->last_wire_gen = gen; win->wire_rebuild_frames = 45; }
+    }
+    if (win->wire_rebuild_frames > 0) {
+        win->wire_rebuild_frames--;
+        if ((win->wire_rebuild_frames % 15) == 0) win->flagword |= SH_FLAG_REBUILD_LIST;
     }
 
     uint64_t f = win->flagword;

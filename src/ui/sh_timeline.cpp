@@ -722,6 +722,13 @@ static QStandardItemModel *tl_build_entity_model(ShTimelineEditor *ed, QObject *
         int row = 0;
         for (int id = 0; id < n; id++) {
             if (!tl_iface_is_valid(ed->iface, id)) continue;
+            /* DEV-LAYER filter (same gate as the Entities/Timelines lists, sh_tabs.cpp): while
+             * `snapEdit_enableDevLayer` is 0 the SnapMap editor hides dev-layer entities (they show as
+             * "(no module)") -- mirror it here so the timeline entity picker AND every entity-typed arg
+             * dropdown (both share this one model) omit them. Reveal via `snapEdit_enableDevLayer 1` then
+             * reopen the timeline. Fail-safe: an absent/faulting slot -> no filtering (show). */
+            if (ed->iface->vtbl->id_dev_layer_hidden &&
+                ed->iface->vtbl->id_dev_layer_hidden(ed->iface, id)) continue;
             char buf[256]; buf[0] = '\0';
             const char *s = ed->iface->vtbl->id_to_string(ed->iface, id, buf, (int)sizeof buf);
             if (s && s[0]) {

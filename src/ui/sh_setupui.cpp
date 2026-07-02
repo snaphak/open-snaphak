@@ -116,8 +116,7 @@ static void sh_retranslateUi(QMainWindow *window, ShWinController *win)
 
     window->setWindowTitle(QApplication::translate(SH_CTX, "SnapHak Studio"));
 
-    static_cast<QCheckBox *>(UIGET(SH_UI_hide_builtin_checkbox))
-        ->setText(QApplication::translate(SH_CTX, "Hide Builtin Snap Objects"));
+    /* (OG's "Hide Builtin Snap Objects" checkbox was removed -- no text to set.) */
     static_cast<QLineEdit *>(UIGET(SH_UI_line_edit_entity_filter))
         ->setToolTip(QApplication::translate(SH_CTX, "Filter for entity names"));
     static_cast<QPushButton *>(UIGET(SH_UI_button_refresh_entity_list))
@@ -189,9 +188,7 @@ static void sh_wire_stub_handlers(ShWinController *win)
     /* Timelines searchbar (clone extension): textChanged -> refilter (rebuild re-applies the timeline name filter). */
     QObject::connect(static_cast<QLineEdit *>(UIGET(SH_UI_line_edit_timeline_filter)),
                      &QLineEdit::textChanged, [win](const QString &) { win->flagword |= SH_FLAG_REFILTER; });
-    /* HideBuiltin toggled -> rebuild (so the builtin filter re-applies). */
-    QObject::connect(static_cast<QCheckBox *>(UIGET(SH_UI_hide_builtin_checkbox)),
-                     &QCheckBox::toggled, [win](bool) { win->flagword |= SH_FLAG_REBUILD_LIST; });
+    /* (OG's "Hide Builtin Snap Objects" checkbox was removed -- no toggle signal to wire.) */
 
     /* Entities list: selection -> set the synced/displayed id (the Entity-State read-sync target). */
     QListWidget *elist = static_cast<QListWidget *>(UIGET(SH_UI_widget_entity_list));
@@ -376,11 +373,8 @@ void sh_setupUi(QMainWindow *window, ShWinController *win)
     verticalLayout_4->setObjectName(QStringLiteral("verticalLayout_4"));
     UISET(SH_UI_verticalLayout_4, verticalLayout_4);
 
-    QCheckBox *hide_builtin = new QCheckBox(tab);
-    hide_builtin->setObjectName(QStringLiteral("hide_builtin_snap_objects_checkbox"));
-    hide_builtin->setChecked(true);
-    UISET(SH_UI_hide_builtin_checkbox, hide_builtin);
-    verticalLayout_4->addWidget(hide_builtin);
+    /* OG's "Hide Builtin Snap Objects" checkbox (param_1[5]) is intentionally NOT created -- the
+     * `snapEdit_enableDevLayer` cvar dev-layer gate replaces it (populate_one_entity, sh_tabs.cpp). */
 
     QListWidget *widget_entity_list = new QListWidget(tab);
     widget_entity_list->setObjectName(QStringLiteral("widget_entity_list"));

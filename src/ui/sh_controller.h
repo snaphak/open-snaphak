@@ -45,7 +45,7 @@ enum ShUiIndex {
     /* Tab 1 -- Entities */
     SH_UI_tab                           = 0x03,
     SH_UI_verticalLayout_4              = 0x04,
-    SH_UI_hide_builtin_checkbox         = 0x05,
+    SH_UI_hide_builtin_checkbox         = 0x05,  /* REMOVED widget (dev-layer cvar gate replaces it); slot kept for OG param_1 index alignment */
     SH_UI_widget_entity_list            = 0x06,
     SH_UI_line_edit_entity_filter       = 0x07,
     SH_UI_button_refresh_entity_list    = 0x08,
@@ -149,13 +149,29 @@ struct ShWinController {
                                           * populated from the LIVE entityDef registry (the Qt window inits
                                           * before the registry is parsed, so init uses the static fallback; the
                                           * read-sync re-populates live ONCE the editor is ready, then latches). */
-    int           last_entity_count = -1;/* the entity_count last seen -- a change (map load / add / delete)
-                                          * auto-raises |1 so the list populates without a manual Refresh. */
+    int           last_entity_count = -1;/* the entity_count last seen -- a change (map load / add) auto-raises
+                                          * |1 so the list populates without a manual Refresh. NOTE: the raw
+                                          * entity_count (arrObj+0x6a8) does NOT shrink on a DELETE (the freed
+                                          * slot stays; ids are stable) -- so a delete is caught by last_valid_count
+                                          * below, not this. */
+    int           last_valid_count = -1; /* the count of VALID entities last seen (sum of is_valid over the array).
+                                          * A DELETE lowers this while last_entity_count is unchanged -> the poll
+                                          * rebuilds so a deleted entity (e.g. a timeline) drops out of the Entities
+                                          * + Timelines lists instead of lingering as a stale, openable row. */
     int           spawn_rebuild_frames = 0; /* QOL: a from-scratch timeline SPAWN places the entity on the game
                                           * thread (deferred) + its className resolves a beat later, so the
                                           * one-shot count-poll can rebuild before the new entity reads as a
                                           * timeline. Set >0 on a spawn -> the dispatch re-scans a few times over
                                           * ~1.5s so the new timeline self-appears in the Timelines list. */
+    int           last_wire_gen = -1;    /* QOL: the wire-any connect-edit generation last seen (iface +0x288,
+                                          * bumped by the backend on each sh_target_any wire connect edit). A
+                                          * wire connect nets NO entity_count change, so the count-poll above
+                                          * never rebuilds -> the connected chain's module-name labels stay
+                                          * "(no module)" until a manual Refresh. A change here opens the
+                                          * wire_rebuild_frames re-scan window below. */
+    int           wire_rebuild_frames = 0; /* re-scan window opened when last_wire_gen changes: rebuilds the
+                                          * entity list a few times over ~0.75s so the connected chain's module
+                                          * names re-read once the connect finalizes (the tail outlasts the drag). */
     /* Camera-Origin sync (OG WIN+0x20/+0x21 stored vec3 + WIN+8/+0x41/+0x42 per-axis dirty flags). */
     float         cam_xyz[3]   = {0.0f, 0.0f, 0.0f};    /* cached camera-origin vec3 (change-detect + Lock source) */
     bool          cam_dirty[3] = {false, false, false}; /* per-axis: the user committed an edit -> push to the editor */
@@ -186,8 +202,8 @@ void sh_dispatch_flagword(ShWinController *win);
 
 /* ---- the 4 DATA-tab handlers (sh_tabs.cpp) --------------------------------------- */
 /* ENTITIES tab: rebuild the entity list from the live editor (port FUN_1800147e8 in a count loop -- skip
- * NULL_/HideBuiltin id<=0x37 when checked/dual-add Timelines), applying the filter text. Clears + repopulates
- * widget_entity_list + timeline_list. Called by the |1 (rebuild) + |8 (refilter) flag consumers. */
+ * NULL_/dev-layer-hidden entities (snapEdit_enableDevLayer gate)/dual-add Timelines), applying the filter text.
+ * Clears + repopulates widget_entity_list + timeline_list. Called by the |1 (rebuild) + |8 (refilter) consumers. */
 void sh_rebuild_entity_list(ShWinController *win);
 
 /* ENTITIES tab right-click ctx-menu (port FUN_180017384): Copy-ID (QClipboard), Delete (iface +0x130),
