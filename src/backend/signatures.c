@@ -426,6 +426,56 @@ const sig_entry BACKEND_ENGINE_SIGNATURES[] = {
                             * file-wide unique (HITS:1 @ 0xcdb3e0). Re-derive (per DOOM build): re-extract. */
       "45 33 D2 48 8D 41 10 48 8D 50 10 41 B9 04 00 00 00 48 3B C2 45 8B C2 45 0F 47 CA",
       0xCDB3E0u },
+    /* --- wire-tool pick-RECLAIM primitives (called, not detoured) used by wiring_mode.c to convert an
+     * in-progress wire pick into a clean wire-any cycle when the toggle flips ON mid-pick. Each is
+     * void(tool, editor), reads only the editor (editor+0x204c8 = the entity table / +0x204d0 = the
+     * selection object), and self-guards on its own tool flag so calling it out of state is a no-op.
+     * Re-derive (per DOOM build): decompile each named RVA. --- */
+    { "WireUndoPrev",      /* FUN_140cd9a90 -- removes the ONE current preview edge, switching on the undo
+                            * class tool+0x24 (7 cases, each removing a slot-pair edge via 5a72a0) then
+                            * clearing tool+0x24. wiring_mode.c calls it FIRST in the sanitize to reclaim the
+                            * dragged preview edge. Unique @ 24-byte window: the generic save prologue
+                            * (48 89 5C 24 08 / 57 / 48 83 EC 20) + MOV EAX,[RCX+0x24] (the undo-class load,
+                            * 8B 41 24) + MOV RDI,RDX + DEC EAX + MOV RBX,RCX + CMP EAX,6 (the 7-case switch
+                            * bound, 83 F8 06) -- distinct from the sibling reclaim leaves. 0 wildcards. */
+      "48 89 5C 24 08 57 48 83 EC 20 8B 41 24 48 8B FA FF C8 48 8B D9 83 F8 06",
+      0xCD9A90u },
+    { "WireDelListenerNode", /* FUN_140cda210 -- if tool+0xc & 0x40 (an auto-created listener node exists),
+                            * deletes that node entity at slot1 (tool+0x14): cdb350(entityTable, idx) removes
+                            * it from the entity-index list, 59fda0(selObj, idx) rebuilds the selection, then
+                            * slot1=-1 and clears tool+0xc&0x40. wiring_mode.c calls it in the sanitize so the
+                            * converted pick leaves no orphan node in the map. Unique @ 25-byte window: the
+                            * save prologue + TEST byte[RCX+0xc],0x40 (F6 41 0C 40 -- the listener flag) +
+                            * MOV RDI,RDX + MOV RBX,RCX + JE (rel8, wildcarded) + MOV EDX,[RCX+0x14] (the
+                            * slot1 load, 8B 51 14). The test-immediate (0x40 at +0x0c) + slot offset (0x14)
+                            * disambiguate it from the near-twin action-node deleter (0x02 at +0x0d, 0x1c). */
+      "48 89 5C 24 08 57 48 83 EC 20 F6 41 0C 40 48 8B FA 48 8B D9 74 ?? 8B 51 14",
+      0xCDA210u },
+    { "WireDelActionNode", /* FUN_140cda2b0 -- the mirror of WireDelListenerNode: if tool+0xd & 2 (an
+                            * auto-created action node exists), deletes that node entity at slot3 (tool+0x1c)
+                            * via the same cdb350 + 59fda0 pair, then slot3=-1 and clears tool+0xd&2. Unique @
+                            * 25-byte window differing from the listener deleter only in the distinguishing
+                            * bytes: TEST byte[RCX+0xd],2 (F6 41 0D 02) + MOV EDX,[RCX+0x1c] (the slot3 load,
+                            * 8B 51 1C); the JE rel8 is wildcarded. */
+      "48 89 5C 24 08 57 48 83 EC 20 F6 41 0D 02 48 8B FA 48 8B D9 74 ?? 8B 51 1C",
+      0xCDA2B0u },
+    { "WireClrMark2",      /* FUN_140cdbe00 -- if tool+0xd & 8, clears the slot2 highlight bit in the editor
+                            * entity-table "marked" bitmask (editor+0x204c8 -> +0x6e0), then clears tool+0xd&8.
+                            * NO entity is deleted (a cosmetic highlight clear only); wiring_mode.c calls it
+                            * best-effort in the sanitize for exactness. The function starts DIRECTLY with the
+                            * test (no frame prologue), so uniqueness comes from the body: TEST byte[RCX+0xd],8
+                            * (F6 41 0D 08) + JE rel8 (wildcarded) + MOV R9D,[RCX+0x18] (the slot2 load,
+                            * 44 8B 49 18) + MOV RAX,[RDX+0x204c8] (the entity-table deref). The test-immediate
+                            * (8) + slot offset (0x18) disambiguate it from the near-twin WireClrMark1 (4, 0x14). */
+      "F6 41 0D 08 74 ?? 44 8B 49 18 48 8B 82 C8 04 02 00",
+      0xCDBE00u },
+    { "WireClrMark1",      /* FUN_140cdbe40 -- the mirror of WireClrMark2: if tool+0xd & 4, clears the slot1
+                            * highlight bit in the same editor+0x6e0 bitmask, then clears tool+0xd&4. NO entity
+                            * delete. Unique @ 17-byte window differing only in the distinguishing bytes: TEST
+                            * byte[RCX+0xd],4 (F6 41 0D 04) + MOV R9D,[RCX+0x14] (the slot1 load, 44 8B 49 14);
+                            * the JE rel8 is wildcarded. Best-effort (optional) in wiring_mode.c. */
+      "F6 41 0D 04 74 ?? 44 8B 49 14 48 8B 82 C8 04 02 00",
+      0xCDBE40u },
     { "Toast",
       "40 57 48 83 EC 20 48 8B F9 48 8B 89 F0 08 00 00",
       0xCFA0B0u },
