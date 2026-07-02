@@ -12,10 +12,11 @@
  * mediation -- but they only take it when the target decl is flagged an input-node (decl+0x3cd & 0x10) or
  * a filter (decl+0x3ce & 1). So while sh_target_any is revealed, we transiently set the hovered target's
  * decl+0x3cd input-node bit for the DURATION of the stock creator's call, let the STOCK creator run its own
- * clean-direct code, then restore the bit immediately. We force NO slots, create NO node, free NO node --
+ * clean-direct code, then restore the bit in a __finally. We force NO slots, create NO node, free NO node --
  * the stock branch does all the work, so none of the placeholder / stray-wire / "(no module)" artifacts a
- * forced-edge hook produces. The bit set is transient + synchronous (restored before the creator returns,
- * long before any render or the next pick), so it never persists and never corrupts the decl.
+ * forced-edge hook produces. The restore runs even if the stock creator exits non-locally (the __finally
+ * fires during the unwind), so the transient bit can never leak onto the decl -- critical because the decl is
+ * shared + process-lifetime and re-hide's &0x3F mask cannot clear a stray input-node bit once leaked.
  *
  * A target that is ALREADY an output-node (decl+0x3cd & 0x20) is left untouched -- that path does not raise
  * the input picker. Off unless sh_target_any is in its reveal state (the OFF passthrough is transparent).
@@ -105,9 +106,18 @@ static void wcd_run(creator_fn stock, void *tool, void *world, int idx)
         } __except (EXCEPTION_EXECUTE_HANDLER) { forced = 0; }
     }
 
-    stock(tool, world, idx);                          /* the STOCK creator does all the work */
-
-    if (forced) { __try { *flagp = old; } __except (EXCEPTION_EXECUTE_HANDLER) {} }
+    /* Run the stock creator with the transient input-node bit set, restoring it in a __finally so the bit is
+     * reverted even if the creator exits non-locally. A mid-pick toggle can leave the wire tool in a state
+     * where the stock creator throws; a plain post-call restore would then be SKIPPED, leaking the input-node
+     * bit onto a GLOBAL, shared decl. Because re-hide masks with &0x3F it cannot clear a leaked 0x10, so the
+     * stray bit would survive every in-editor map re-entry (mis-flagging the decl an input-node -> the reload
+     * reconcile rejects it) until the decls are reloaded fresh. __finally runs during the unwind, so the bit
+     * is always put back. */
+    __try {
+        stock(tool, world, idx);                      /* the STOCK creator does all the work */
+    } __finally {
+        if (forced) { __try { *flagp = old; } __except (EXCEPTION_EXECUTE_HANDLER) {} }
+    }
 
     /* Signal the UI that a wire-any connect edit occurred (idx >= 0 = a real target pick). The Studio think-
      * loop reads sh_wiring_cleandirect_generation() (iface +0x288) alongside entity_count and rebuilds the
