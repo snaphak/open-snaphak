@@ -456,7 +456,27 @@ static LRESULT CALLBACK PocWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_SIZE: if (g_controller) { RECT rc; GetClientRect(hwnd, &rc); g_controller->put_Bounds(rc); } return 0;
-    case WM_CLOSE: ShowWindow(hwnd, SW_HIDE); return 0;
+    case WM_CLOSE: return 0;   /* inert: don't let the user close the UI while in the editor (would need a map reload) */
+    case WM_NCCALCSIZE:
+        /* frameless: consume the whole non-client area so the client (WebView2) fills the window and the
+         * native title bar is gone. WS_THICKFRAME is kept so Aero Snap + maximize still work. */
+        if (wp) return 0;
+        break;
+    case WM_GETMINMAXINFO: {
+        /* a frameless maximize would cover the taskbar -- clamp it to the monitor work area. */
+        MINMAXINFO *mmi = (MINMAXINFO *)lp;
+        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi; mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(mon, &mi)) {
+            mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+            mmi->ptMaxPosition.y = mi.rcWork.top  - mi.rcMonitor.top;
+            mmi->ptMaxSize.x      = mi.rcWork.right  - mi.rcWork.left;
+            mmi->ptMaxSize.y      = mi.rcWork.bottom - mi.rcWork.top;
+            mmi->ptMaxTrackSize.x = mmi->ptMaxSize.x;
+            mmi->ptMaxTrackSize.y = mmi->ptMaxSize.y;
+        }
+        return 0;
+    }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);   /* MUST be W: ANSI DefWindowProcA truncates the wide caption to "S" */
 }
@@ -465,8 +485,9 @@ static void poc_create_window()
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc); wc.lpfnWndProc = PocWndProc; wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"SnapHakStudioWebView";
+    wc.style = CS_NOCLOSE;   /* remove the native close (X) button -- can't close the UI from the editor */
     RegisterClassExW(&wc);
-    g_hwnd = CreateWindowExW(0, L"SnapHakStudioWebView", L"SnapHak Studio (WebView2 POC)",
+    g_hwnd = CreateWindowExW(0, L"SnapHakStudioWebView", L"SnapHak Studio",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1040, 720, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     poc_logf("window created (hwnd=%lu)", (unsigned long)(uintptr_t)g_hwnd);
 }
@@ -511,6 +532,21 @@ static HRESULT on_message(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventA
                 if (json_get_double(json, L"y", &y)) g_cam_xyz[1] = (float)y;
                 if (json_get_double(json, L"z", &z)) g_cam_xyz[2] = (float)z;
                 g_cam_write_once = true;
+            } else if (cmd == L"winMin") {
+                ShowWindow(g_hwnd, SW_MINIMIZE);
+            } else if (cmd == L"winMax") {
+                ShowWindow(g_hwnd, IsZoomed(g_hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+            } else if (cmd == L"winDrag") {
+                ReleaseCapture();
+                SendMessageW(g_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);   /* start the native move loop */
+            } else if (cmd == L"winResize") {
+                std::wstring dir; json_get_wstr(json, L"dir", dir);
+                WPARAM ht = 0;
+                if      (dir == L"l")  ht = HTLEFT;      else if (dir == L"r")  ht = HTRIGHT;
+                else if (dir == L"t")  ht = HTTOP;       else if (dir == L"b")  ht = HTBOTTOM;
+                else if (dir == L"tl") ht = HTTOPLEFT;   else if (dir == L"tr") ht = HTTOPRIGHT;
+                else if (dir == L"bl") ht = HTBOTTOMLEFT;else if (dir == L"br") ht = HTBOTTOMRIGHT;
+                if (ht) { ReleaseCapture(); SendMessageW(g_hwnd, WM_NCLBUTTONDOWN, ht, 0); }
             } else if (cmd == L"pushStack") {
                 std::vector<int> ids; json_get_intarray(json, L"eids", ids);
                 wchar_t m[160];

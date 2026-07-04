@@ -28,6 +28,18 @@
   .theme-toggle { display: inline-flex; border: 1px solid var(--border2); border-radius: 20px; overflow: hidden; cursor: pointer; }
   .theme-toggle span { padding: 3px 11px; color: var(--muted); }
   .theme-toggle span.on { background: var(--accent); color: var(--accentText); }
+  .win-controls { display: flex; margin-left: 8px; }
+  .win-btn { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; cursor: default; }
+  .win-btn:hover { background: var(--panel2); color: var(--text); }
+  .rz { position: fixed; z-index: 2500; }
+  .rz-t { top: 0; left: 0; right: 0; height: 4px; cursor: ns-resize; }
+  .rz-b { bottom: 0; left: 0; right: 0; height: 4px; cursor: ns-resize; }
+  .rz-l { left: 0; top: 0; bottom: 0; width: 4px; cursor: ew-resize; }
+  .rz-r { right: 0; top: 0; bottom: 0; width: 4px; cursor: ew-resize; }
+  .rz-tl { top: 0; left: 0; width: 9px; height: 9px; cursor: nwse-resize; }
+  .rz-tr { top: 0; right: 0; width: 9px; height: 9px; cursor: nesw-resize; }
+  .rz-bl { bottom: 0; left: 0; width: 9px; height: 9px; cursor: nesw-resize; }
+  .rz-br { bottom: 0; right: 0; width: 9px; height: 9px; cursor: nwse-resize; }
 
   .tabstrip { display: flex; background: var(--chrome); border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 6px; gap: 2px; }
   .tab { padding: 7px 14px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; }
@@ -122,6 +134,10 @@
       <span class="on" id="segLight">Light</span>
       <span id="segDark">Dark</span>
     </div>
+    <div class="win-controls">
+      <div class="win-btn" id="winMin" title="Minimize">&#8211;</div>
+      <div class="win-btn" id="winMax" title="Maximize / Restore">&#9633;</div>
+    </div>
   </div>
 
   <div class="tabstrip">
@@ -179,6 +195,8 @@
 
 <div class="ctxmenu" id="ctxmenu"></div>
 <div id="toastHost"></div>
+<div class="rz rz-t"></div><div class="rz rz-b"></div><div class="rz rz-l"></div><div class="rz rz-r"></div>
+<div class="rz rz-tl"></div><div class="rz rz-tr"></div><div class="rz rz-bl"></div><div class="rz rz-br"></div>
 
 <script>
   var allEntities = [];      // last list from backend
@@ -272,6 +290,7 @@
     else if (o.cmd === 'enumClasses') { onMessage({kind:'classes', inherit:o.inherit, items:['idVolume_Blocking','idVolume_Trigger','idVolume_Damage','idVolume_Water']}); }
     else if (o.cmd === 'selectInEditor') { /* no 3D editor in browser preview */ }
     else if (o.cmd === 'camLock' || o.cmd === 'camSet') { /* no editor in browser preview */ }
+    else if (o.cmd && o.cmd.indexOf('win') === 0) { /* window controls: no-op in browser preview */ }
   }
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function selCount() { var c = 0; for (var k in selectedEids) if (selectedEids[k]) c++; return c; }
@@ -526,6 +545,18 @@
   document.getElementById('segLight').addEventListener('click', function(){ setTheme(false); });
   document.getElementById('segDark').addEventListener('click', function(){ setTheme(true); });
   (function(){ var t = 'light'; try { t = localStorage.getItem('sh_theme') || 'light'; } catch (e) {} setTheme(t === 'dark'); })();
+
+  // frameless window controls: minimize / maximize, drag on the menu bar, resize on the edge handles.
+  document.getElementById('winMin').addEventListener('click', function(){ post({cmd:'winMin'}); });
+  document.getElementById('winMax').addEventListener('click', function(){ post({cmd:'winMax'}); });
+  var menubarEl = document.querySelector('.menubar');
+  function barInteractive(t){ return t.closest('.menu, .theme-toggle, .win-controls, button, input'); }
+  menubarEl.addEventListener('mousedown', function(e){ if (e.button === 0 && !barInteractive(e.target)) post({cmd:'winDrag'}); });
+  menubarEl.addEventListener('dblclick', function(e){ if (!barInteractive(e.target)) post({cmd:'winMax'}); });
+  [['rz-t','t'],['rz-b','b'],['rz-l','l'],['rz-r','r'],['rz-tl','tl'],['rz-tr','tr'],['rz-bl','bl'],['rz-br','br']].forEach(function(p){
+    var el = document.querySelector('.'+p[0]);
+    if (el) el.addEventListener('mousedown', function(e){ if (e.button === 0) { e.preventDefault(); post({cmd:'winResize', dir:p[1]}); } });
+  });
 
   post({cmd:'refresh'});
 </script>
