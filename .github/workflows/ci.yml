@@ -5,7 +5,8 @@
 # write context (the classic PR -> secret-exfil / RCE footgun). The only workflow that holds publish/signing
 # secrets is release.yml, and it runs only on a reviewed tag.
 #
-# HARDENING TODO before this repo goes public: pin every third-party action below to a full commit SHA.
+# Every third-party action is pinned to a full commit SHA (immutable) with a human-readable version comment;
+# Dependabot (.github/dependabot.yml) proposes SHA bumps as reviewable PRs. Do not replace a SHA with a tag.
 name: CI
 
 on:
@@ -21,7 +22,7 @@ jobs:
     name: Security guard (secretless)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
       - name: Compute diff base
@@ -51,14 +52,27 @@ jobs:
         run: |
           BASE='${{ steps.base.outputs.sha }}'
           ADDED=$(git diff "$BASE...HEAD" -- 'src/**' 'installer/**' | grep -E '^\+' | grep -v '^\+\+\+' || true)
-          PAT='WinHttp|URLDownloadToFile|InternetOpen|WSAStartup|\bsocket\s*\(|CreateProcess|ShellExecute|WinExec|\bsystem\s*\(|WriteProcessMemory|VirtualAllocEx|CurrentVersion..Run|schtasks|RegSetValue'
-          HITS=$(printf '%s\n' "$ADDED" | grep -nEi "$PAT" || true)
+          # BLOCK (hard-fail): code-injection + boot-persistence APIs an in-process game mod + its installer have
+          # NO legitimate reason to call. The tool hooks its OWN process (VirtualProtect + memcpy) -- it never
+          # writes another process's memory, spawns a remote thread, or installs a Run-key / scheduled task.
+          BLOCK='WriteProcessMemory|CreateRemoteThread|NtCreateThreadEx|RtlCreateUserThread|VirtualAllocEx|QueueUserAPC|CurrentVersion..Run|schtasks'
+          BAD=$(printf '%s\n' "$ADDED" | grep -nEi "$BLOCK" || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Capability-surface scan BLOCKED: new lines call code-injection / persistence APIs the"
+            echo "::error::tool has no legitimate reason to use. If truly intended, a maintainer must justify it:"
+            printf '%s\n' "$BAD"
+            exit 1
+          fi
+          # WARN (manual review): lower-confidence surfaces -- network, process spawn, generic registry writes.
+          # The installer legitimately shells out to `reg query` / `tasklist`, so these only ask a reviewer to look.
+          WARN='WinHttp|URLDownloadToFile|InternetOpen|WSAStartup|\bsocket\s*\(|CreateProcess|ShellExecute|WinExec|\bsystem\s*\(|RegSetValue'
+          HITS=$(printf '%s\n' "$ADDED" | grep -nEi "$WARN" || true)
           if [ -n "$HITS" ]; then
-            echo "::warning::Capability-surface scan flagged new lines for MANUAL review (the tool has no legitimate"
-            echo "::warning::reason to open sockets, download, spawn processes, or set persistence):"
+            echo "::warning::Capability-surface scan flagged new lines for MANUAL review (network / process-spawn /"
+            echo "::warning::registry): confirm each is a legitimate use before merging:"
             printf '%s\n' "$HITS"
           else
-            echo "OK: no flagged capability-surface APIs introduced."
+            echo "OK: no blocked APIs, and no flagged capability-surface APIs introduced."
           fi
       - name: Secret scan (gitleaks)
         # The gitleaks-action@v2 requires a PAID license for organizations; the gitleaks BINARY is free.
@@ -72,14 +86,14 @@ jobs:
     name: Build + test (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install Qt 5.9.9
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
           version: '5.9.9'
           arch: win64_msvc2017_64
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.21'
       - name: Build both DLLs
@@ -95,6 +109,42 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           .\package.ps1 -QtDir "$env:QT_ROOT_DIR"
+      - name: Clean-room bundle guard (layout + Qt self-containment)
+        shell: pwsh
+        run: |
+          # Re-guards the clean-machine failure mode: on a box WITHOUT Qt installed, the app finds the platform
+          # plugin only in <exe-dir>\platforms\, so qwindows.dll MUST ship there (not plugins\platforms\), and
+          # every Qt DLL a bundled DLL imports must itself ship inside the bundle. This asserts the packaged
+          # dist\ layout AND that each bundled DLL's Qt5* / qwindows dependency resolves WITHIN dist\ -- no
+          # reliance on a system Qt. (Static check: it does not launch a scrubbed-runtime process; a full
+          # clean-room load test remains a manual pre-release step.)
+          $ErrorActionPreference = 'Stop'
+          $dist = "dist"
+          $must = @(
+            "XINPUT1_3.dll",
+            "snaphak\snaphakui.dll", "snaphak\Qt5Core.dll", "snaphak\Qt5Gui.dll", "snaphak\Qt5Widgets.dll",
+            "platforms\qwindows.dll", "MANIFEST.sha256"
+          )
+          foreach ($f in $must) {
+            if (-not (Test-Path (Join-Path $dist $f))) { throw "bundle guard: missing $f in dist\" }
+          }
+          if (Test-Path (Join-Path $dist "plugins")) {
+            throw "bundle guard: dist\plugins\ must not exist -- qwindows.dll belongs in platforms\ (beside the game exe)"
+          }
+          $dumpbin = (Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1).FullName
+          $present = @(Get-ChildItem -Recurse -File $dist | ForEach-Object { $_.Name.ToLower() })
+          foreach ($dll in @("XINPUT1_3.dll","snaphak\snaphakui.dll","snaphak\Qt5Core.dll","snaphak\Qt5Gui.dll","snaphak\Qt5Widgets.dll","platforms\qwindows.dll")) {
+            $deps = & $dumpbin /dependents (Join-Path $dist $dll)
+            foreach ($line in $deps) {
+              if ($line -match '(?i)\b(Qt5\w+\.dll|qwindows\.dll)\b') {
+                $need = $matches[1].ToLower()
+                if ($present -notcontains $need) {
+                  throw "bundle guard: $dll needs $need, but it is not bundled in dist\ (a clean machine has no Qt to fall back on)"
+                }
+              }
+            }
+          }
+          Write-Host "bundle guard OK: layout + Qt dependency closure verified within dist\"
       - name: XInput ordinal parity (must match System32)
         shell: pwsh
         run: |

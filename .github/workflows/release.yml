@@ -5,7 +5,9 @@
 # It builds the DLLs + the installer, assembles the overlay, and publishes a GitHub Release with the bundle
 # zip + snaphak.exe + install.ps1. (The release publishes to THIS repo via the github context -- no slug.)
 #
-# HARDENING TODO before going public: pin every third-party action to a full commit SHA.
+# Every third-party action is pinned to a full commit SHA (immutable) with a version comment; Dependabot
+# (.github/dependabot.yml) proposes bumps as reviewable PRs. This workflow also attests the provenance of the
+# published release artifacts (actions/attest-build-provenance) so a downloader can verify they came from here.
 name: Release
 
 on:
@@ -13,22 +15,24 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write   # create the GitHub Release
+  contents: write       # create the GitHub Release
+  id-token: write       # OIDC token used to sign the build-provenance attestation
+  attestations: write   # record the provenance attestation for the published artifacts
 
 jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0   # full history + tags -- the changelog step diffs this tag against the previous one
       - name: Install Qt 5.9.9
-        uses: jurplel/install-qt-action@v4
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
           version: '5.9.9'
           arch: win64_msvc2017_64
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.21'
       - name: Build + package
@@ -80,8 +84,16 @@ jobs:
             | grep -viE 'co-authored-by|generated with claude|claude\.com/claude-code|noreply@anthropic|🤖' \
             >> notes.md || true
           echo "" >> notes.md
+      - name: Attest build provenance (the published artifacts)
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1
+        with:
+          # Attest exactly what users download: the overlay bundle + the installer exe. A downloader can then
+          # verify origin with `gh attestation verify <file> --repo snaphak/open-snaphak`.
+          subject-path: |
+            snaphak-bundle.zip
+            dist/snaphak.exe
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           # A tag with a '-' (e.g. v0.3.0-beta.1) is a BETA pre-release: GitHub excludes it from "latest", so
           # `snaphak update` (end users) never gets it; beta testers opt in via `snaphak install --release <tag>`.

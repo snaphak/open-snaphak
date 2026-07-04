@@ -1,0 +1,16 @@
+# Dependabot keeps our SHA-pinned GitHub Actions current: when an action publishes a new release it opens a PR
+# updating the pinned commit SHA (and its version comment), so the pins stay both immutable and up to date.
+# Actions are the only external dependency surface here -- the Go installer is stdlib-only and the C/Qt build
+# vendors nothing through a package manager -- so github-actions is the single ecosystem worth watching.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"
