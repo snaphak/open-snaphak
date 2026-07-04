@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SnapHak Studio</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 12px; background: #f0f0f0; color: #1a1a1a; height: 100%; }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  .titlebar { display: flex; align-items: center; background: #2b2b2b; color: #eee; height: 24px; padding: 0 8px; flex-shrink: 0; user-select: none; }
+  .titlebar .icon { width: 11px; height: 11px; background: #4a9; margin-right: 8px; }
+  .titlebar .t { font-size: 11px; }
+
+  .tabstrip { display: flex; background: #e4e4e4; border-bottom: 1px solid #b9b9b9; flex-shrink: 0; }
+  .tab { padding: 6px 14px; cursor: pointer; border-right: 1px solid #cfcfcf; color: #444; }
+  .tab.active { background: #f7f7f7; border-bottom: 2px solid #2b78c4; color: #111; font-weight: 600; }
+  .tab:hover:not(.active) { background: #ececec; }
+
+  .content { flex: 1; display: flex; overflow: hidden; background: #f7f7f7; min-height: 0; }
+
+  .left-pane { width: 40%; min-width: 260px; display: flex; flex-direction: column; padding: 8px; border-right: 1px solid #c9c9c9; }
+  .opts { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+  .opts label { color: #333; display: flex; align-items: center; gap: 5px; }
+  .entity-list { flex: 1; background: #fff; border: 1px solid #9a9a9a; overflow-y: auto; user-select: none; -webkit-user-select: none; }
+  .entity-item { padding: 2px 6px; color: #1a4fbf; white-space: nowrap; cursor: default; line-height: 1.5; }
+  .entity-item .name { color: #1a1a1a; }
+  .entity-item.hidden-ent { color: #999; font-style: italic; }
+  .entity-item.hidden-ent .name { color: #999; }
+  .entity-item.selected { background: #cfe2f7; }
+  .entity-item.selected .name { color: #10305f; }
+  .list-empty { padding: 10px; color: #888; font-style: italic; }
+  .list-controls { display: flex; gap: 6px; margin-top: 6px; }
+  .list-controls input { flex: 1; padding: 3px 6px; border: 1px solid #9a9a9a; font-size: 12px; }
+
+  .btn { padding: 3px 10px; border: 1px solid #8e8e8e; background: linear-gradient(#fdfdfd, #e9e9e9); cursor: pointer; border-radius: 2px; font-size: 12px; }
+  .btn:hover:not(:disabled) { background: #f3f3f3; }
+  .btn:active:not(:disabled) { background: #dcdcdc; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+
+  .right-pane { flex: 1; display: flex; flex-direction: column; padding: 8px; min-width: 0; }
+  .placeholder { flex: 1; background: #fff; border: 1px solid #9a9a9a; display: flex; align-items: center; justify-content: center; text-align: center; color: #999; font-style: italic; padding: 20px; }
+  .editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .decl-text { flex: 1; min-height: 0; resize: none; background: #fff; border: 1px solid #9a9a9a; font-family: Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.45; padding: 6px 8px; color: #333; white-space: pre; }
+  .fields { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin-top: 8px; }
+  .field { display: flex; align-items: center; gap: 5px; }
+  .field label { color: #333; }
+  .field input { padding: 2px 5px; border: 1px solid #9a9a9a; font-size: 12px; }
+  .field.grow { flex: 1; min-width: 140px; }
+  .field.grow input { width: 100%; }
+  .save-msg { font-size: 11px; color: #555; }
+
+  .combo { position: relative; display: inline-flex; }
+  .combo.grow { flex: 1; min-width: 150px; }
+  .combo input { flex: 1; padding: 2px 5px; border: 1px solid #9a9a9a; border-right: none; font-size: 12px; min-width: 0; }
+  .combo-arrow { width: 18px; border: 1px solid #9a9a9a; background: #ececec; cursor: pointer; font-size: 9px; color: #444; padding: 0; }
+  .combo-arrow:hover { background: #e0e0e0; }
+  .combo-list { position: absolute; bottom: 100%; left: 0; right: 0; max-height: 220px; overflow-y: auto; background: #fff; border: 1px solid #888; box-shadow: 0 -3px 8px rgba(0,0,0,0.2); z-index: 1500; display: none; }
+  .combo-opt { padding: 2px 7px; cursor: default; white-space: nowrap; }
+  .combo-opt:hover { background: #cfe2f7; }
+  .combo-hint, .combo-empty { padding: 3px 7px; color: #888; font-size: 11px; font-style: italic; }
+
+  .ctxmenu { position: absolute; z-index: 1000; background: #fff; border: 1px solid #888; box-shadow: 2px 2px 6px rgba(0,0,0,0.25); min-width: 130px; padding: 3px 0; display: none; }
+  .ctxmenu div { padding: 4px 16px; cursor: default; }
+  .ctxmenu div:hover { background: #cfe2f7; }
+
+  .statusbar { flex-shrink: 0; display: flex; align-items: center; gap: 14px; background: #2b2b2b; color: #ddd; padding: 5px 10px; font-size: 11px; }
+  .statusbar .dot { width: 9px; height: 9px; border-radius: 50%; background: #888; display: inline-block; margin-right: 5px; }
+  .statusbar .dot.ok { background: #4ad07d; }
+  .statusbar .dot.no { background: #d0704a; }
+  .statusbar b { color: #fff; }
+  .statusbar .muted { color: #999; }
+  .statusbar .spacer { flex: 1; }
+
+  #toastHost { position: fixed; top: 32px; right: 12px; display: flex; flex-direction: column; gap: 8px; z-index: 2000; pointer-events: none; }
+  .toast { min-width: 150px; max-width: 320px; padding: 8px 12px; background: #333; color: #fff; border-radius: 5px; font-size: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.32); opacity: 0; transform: translateX(120%); transition: opacity .28s ease, transform .28s cubic-bezier(.2,.8,.2,1); }
+  .toast.show { opacity: 1; transform: translateX(0); }
+  .toast.ok   { background: #2e7d46; }
+  .toast.warn { background: #9a6a1a; }
+  .toast.err  { background: #a3352f; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="titlebar"><div class="icon"></div><div class="t">SnapHak Studio</div></div>
+
+  <div class="tabstrip">
+    <div class="tab active">Entities</div>
+    <div class="tab">Prefabs</div>
+    <div class="tab">Timelines</div>
+  </div>
+
+  <div class="content">
+    <div class="left-pane">
+      <div class="opts">
+        <label><input type="checkbox" id="showHidden"> Show hidden entities</label>
+        <label><input type="checkbox" id="syncEditor"> Synchronize with editor</label>
+        <label><input type="checkbox" id="selectInEditor"> Select in editor</label>
+      </div>
+      <div class="entity-list" id="entityList"><div class="list-empty">Waiting for the map...</div></div>
+      <div class="list-controls">
+        <input type="text" id="filterBox" placeholder="Filter entities...">
+        <button class="btn" id="refreshBtn">Refresh</button>
+      </div>
+    </div>
+
+    <div class="right-pane">
+      <div class="placeholder" id="selInfo">Select an entity from the list.</div>
+      <div class="editor" id="editor" style="display:none;">
+        <textarea class="decl-text" id="declText" spellcheck="false"></textarea>
+        <div class="fields">
+          <div class="field grow"><label>Inherit</label><div class="combo grow" id="cInherit"><input type="text" id="fInherit" autocomplete="off"><button type="button" class="combo-arrow">&#9662;</button><div class="combo-list"></div></div></div>
+          <div class="field grow"><label>Classname</label><div class="combo grow" id="cClassname"><input type="text" id="fClassname" autocomplete="off"><button type="button" class="combo-arrow">&#9662;</button><div class="combo-list"></div></div></div>
+          <div class="field grow"><label>Displayname</label><input type="text" id="fDisplayname"></div>
+          <button class="btn" id="revertBtn" disabled>Revert</button>
+          <button class="btn" id="saveBtn" disabled>Save to Decl</button>
+          <span class="save-msg" id="saveMsg"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span><span class="dot" id="bridgeDot"></span><b id="verText">SnapHak</b> <span id="connText">connecting...</span></span>
+    <span>Entities: <b id="entCount">?</b> <span class="muted" id="hiddenNote"></span></span>
+    <span>Editor ready: <b id="edReady">?</b></span>
+    <span>Selected: <b id="selCount">0</b></span>
+    <span class="spacer"></span>
+    <span id="stamp"></span>
+  </div>
+</div>
+
+<div class="ctxmenu" id="ctxmenu"></div>
+<div id="toastHost"></div>
+
+<script>
+  var allEntities = [];      // last list from backend
+  var visibleEids = [];      // eids currently rendered (in order)
+  var selectedEids = {};     // set of selected eids
+  var primaryEid = -1;       // anchor shown in the state editor
+  var anchorEid = -1;        // shift-range anchor
+  var loaded = null;         // last-loaded state (for dirty compare + revert)
+  var selectMode = false;    // "Select in editor": push list selection -> 3D editor
+  var inheritsRequested = false;
+  var inheritItems = [], classItems = [];
+  var inheritCombo = null, classCombo = null;
+
+  // editable combobox: click the arrow for the FULL list, type to filter, free-text still allowed.
+  function Combo(containerId, itemsFn, onType, onPick) {
+    var c = document.getElementById(containerId);
+    var input = c.querySelector('input');
+    var arrow = c.querySelector('.combo-arrow');
+    var list = c.querySelector('.combo-list');
+    var open = false;
+    function render() {
+      var q = input.value.toLowerCase();
+      var items = itemsFn() || [];
+      var out = [], cap = 1200;
+      for (var i = 0; i < items.length; i++) { if (!q || items[i].toLowerCase().indexOf(q) !== -1) { out.push(items[i]); if (out.length >= cap) break; } }
+      var h = '';
+      for (var j = 0; j < out.length; j++) h += '<div class="combo-opt">' + esc(out[j]) + '</div>';
+      if (out.length === 0) h = '<div class="combo-empty">no matches</div>';
+      else if (out.length >= cap) h += '<div class="combo-hint">first ' + cap + ' shown -- type to narrow</div>';
+      list.innerHTML = h;
+    }
+    function show() { render(); list.style.display = 'block'; open = true; }
+    function hide() { list.style.display = 'none'; open = false; }
+    arrow.addEventListener('mousedown', function(e){ e.preventDefault(); if (open) hide(); else { show(); input.focus(); } });
+    input.addEventListener('focus', show);
+    input.addEventListener('input', function(){ if (!open) show(); else render(); if (onType) onType(); });
+    input.addEventListener('keydown', function(e){ if (e.key === 'Escape') hide(); });
+    list.addEventListener('mousedown', function(e){ if (e.target && e.target.className === 'combo-opt') { e.preventDefault(); input.value = e.target.textContent; hide(); if (onPick) onPick(); } });
+    document.addEventListener('mousedown', function(e){ if (!c.contains(e.target)) hide(); });
+    return { refresh: function(){ if (open) render(); } };
+  }
+  function pushSelectionToEditor() {
+    if (!selectMode) return;
+    // never ask the editor to select an entity it is HIDING (dev-layer) -- that's a likely freeze source.
+    var hid = {}; for (var i=0;i<allEntities.length;i++) if (allEntities[i].hidden) hid[allEntities[i].eid] = true;
+    var eids = selList().filter(function(e){ return !hid[e]; });
+    post({cmd:'selectInEditor', eids: eids});
+  }
+
+  var PREVIEW = !(window.chrome && window.chrome.webview);
+  function post(o) { if (!PREVIEW) { window.chrome.webview.postMessage(o); return; } previewHandle(o); }
+
+  // ---- browser preview: when opened in a plain browser (no DOOM backend), fake the native side so the
+  // file is self-demoing and fully interactive. Inert in DOOM (PREVIEW is false there). ----
+  var previewEnts = [
+    {eid:65, id:'0_ind_totally_blank_room_4x/snapmaps/volume/blocking', name:'Block Box', hidden:false},
+    {eid:61, id:'0_ind_totally_blank_room_4x/player/coop/player_start', name:'My Player Start', hidden:false},
+    {eid:62, id:'0_ind_totally_blank_room_4x/snapmaps/variable/string', name:'', hidden:false},
+    {eid:63, id:'0_ind_totally_blank_room_4x/snapmaps/variable/integer', name:'', hidden:false},
+    {eid:74, id:'0_ind_totally_blank_room_4x/snapmaps/ai/ai', name:'Heavy Gunner', hidden:false},
+    {eid:78, id:'0_ind_totally_blank_room_4x/snapmaps/action/variable/integer/add', name:'Add (1)', hidden:false},
+    {eid:0,  id:'0_ind_totally_blank_room_4x/snapmaps/filter/user_filter_entity_0', name:'#str_prefilter_any_player', hidden:true},
+    {eid:1,  id:'0_ind_totally_blank_room_4x/snapmaps/filter/user_filter_entity_1', name:'#str_prefilter_any_ai', hidden:true},
+    {eid:49, id:'0_ind_totally_blank_room_4x/snapmaps/filter/droppable_49', name:'', hidden:true}
+  ];
+  var previewStates = {
+    65: {decl:'edit = {\n\trenderModelInfo = {\n\t\tmodel = "models/mapobjects/snapmaps/box_trigger.lwo";\n\t\tscale = { x = 16; y = 128; z = 64; }\n\t}\n\tblockDemons = false;\n\tisVisible = true;\n\tisNetworkStatic = true;\n}', classname:'idVolume_Blocking', inherit:'snapmaps/volume/blocking', displayname:'Block Box'},
+    61: {decl:'edit = {\n\tteam = "coop";\n\tisVisible = true;\n}', classname:'idPlayerStart_Coop', inherit:'player/coop', displayname:'My Player Start'},
+    74: {decl:'edit = {\n\taiType = "heavy";\n\thealth = 300;\n}', classname:'idAI_Snapmap', inherit:'snapmaps/ai', displayname:'Heavy Gunner'}
+  };
+  function previewList() { return {kind:'list', version:'local (preview)', editorReady:true, count:0, entities:previewEnts}; }
+  function previewHandle(o) {
+    if (o.cmd === 'refresh') { onMessage(previewList()); }
+    else if (o.cmd === 'select') { var s = previewStates[o.eid] || {decl:'(no sample decl for this entity)', classname:'', inherit:'', displayname:''}; onMessage({kind:'state', auto:false, eid:o.eid, ok:true, decl:s.decl, classname:s.classname, inherit:s.inherit, displayname:s.displayname}); }
+    else if (o.cmd === 'save') {
+      // preview only: fake the backend's validation so all three toast colors are demoable.
+      // empty classname -> failed (red); a non-"id" classname -> refused (amber); else saved (green).
+      var res = !o.classname ? -2 : (o.classname.indexOf('id') !== 0 ? 0 : 1);
+      if (res === 1) {
+        previewStates[o.eid] = {decl:o.decl, classname:o.classname, inherit:o.inherit, displayname:o.displayname};
+        for (var i=0;i<previewEnts.length;i++) if (previewEnts[i].eid===o.eid) previewEnts[i].name=o.displayname;
+        onMessage({kind:'saveResult', result:1}); onMessage(previewList());
+        onMessage({kind:'state', auto:false, eid:o.eid, ok:true, decl:o.decl, classname:o.classname, inherit:o.inherit, displayname:o.displayname});
+      } else {
+        onMessage({kind:'saveResult', result:res});   // refused/failed: leave the edit dirty so you can fix it
+      }
+    }
+    else if (o.cmd === 'delete') { previewEnts = previewEnts.filter(function(e){ return o.eids.indexOf(e.eid) < 0; }); onMessage(previewList()); }
+    else if (o.cmd === 'pushStack') { onMessage({kind:'info', text:'Push to stack 0: ' + o.eids.length + ' selected (preview only).'}); }
+    else if (o.cmd === 'enumInherits') { onMessage({kind:'inherits', items:['snapmaps/volume/blocking','snapmaps/volume/trigger','player/coop','snapmaps/ai','snapmaps/variable','snapmaps/action/variable/integer','snapmaps/light','light','snapmaps/listener/ai']}); }
+    else if (o.cmd === 'enumClasses') { onMessage({kind:'classes', inherit:o.inherit, items:['idVolume_Blocking','idVolume_Trigger','idVolume_Damage','idVolume_Water']}); }
+    else if (o.cmd === 'selectInEditor') { /* no 3D editor in browser preview */ }
+  }
+  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function selCount() { var c = 0; for (var k in selectedEids) if (selectedEids[k]) c++; return c; }
+  function selList() { var a = []; for (var k in selectedEids) if (selectedEids[k]) a.push(parseInt(k,10)); return a; }
+
+  function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).catch(function(){fallbackCopy(t);});
+    else fallbackCopy(t);
+  }
+  function fallbackCopy(t) { var ta=document.createElement('textarea'); ta.value=t; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');}catch(e){} document.body.removeChild(ta); }
+
+  function renderList() {
+    var listEl = document.getElementById('entityList');
+    var showHidden = document.getElementById('showHidden').checked;
+    var filter = document.getElementById('filterBox').value.toLowerCase();
+    var scroll = listEl.scrollTop;
+
+    var vis = showHidden ? allEntities : allEntities.filter(function(e){return !e.hidden;});
+    var rows = vis.filter(function(e){ return !filter || e.id.toLowerCase().indexOf(filter)!==-1 || (e.name && e.name.toLowerCase().indexOf(filter)!==-1); });
+
+    var hiddenCount = allEntities.filter(function(e){return e.hidden;}).length;
+    var shownCount = showHidden ? allEntities.length : (allEntities.length - hiddenCount);
+    document.getElementById('entCount').textContent = shownCount;
+    document.getElementById('hiddenNote').textContent = hiddenCount>0 ? ('('+hiddenCount+(showHidden?' hidden shown':' hidden')+')') : '';
+
+    visibleEids = rows.map(function(e){return e.eid;});
+    if (rows.length === 0) {
+      listEl.innerHTML = '<div class="list-empty">'+(allEntities.length===0?'No entities (open a map in the SnapMap editor).':'No matches.')+'</div>';
+      return;
+    }
+    var html = '';
+    for (var i=0;i<rows.length;i++) {
+      var e = rows[i];
+      var cls = 'entity-item'+(e.hidden?' hidden-ent':'')+(selectedEids[e.eid]?' selected':'');
+      var label = e.name ? (': <span class="name">'+esc(e.name)+'</span>') : '';
+      html += '<div class="'+cls+'" data-eid="'+e.eid+'">'+esc(e.id)+label+'</div>';
+    }
+    listEl.innerHTML = html;
+    listEl.scrollTop = scroll;
+    var items = listEl.querySelectorAll('.entity-item');
+    for (var j=0;j<items.length;j++) {
+      items[j].addEventListener('mousedown', onRowMouseDown);
+      items[j].addEventListener('contextmenu', onRowContext);
+    }
+    updateSelCount();
+  }
+
+  function updateSelDom() {
+    var items = document.querySelectorAll('#entityList .entity-item');
+    for (var i=0;i<items.length;i++) {
+      var eid = parseInt(items[i].getAttribute('data-eid'),10);
+      if (selectedEids[eid]) items[i].classList.add('selected'); else items[i].classList.remove('selected');
+    }
+    updateSelCount();
+  }
+  function updateSelCount() { document.getElementById('selCount').textContent = selCount(); }
+
+  function onRowMouseDown(ev) {
+    if (ev.button !== 0 && ev.button !== 2) return;
+    var eid = parseInt(this.getAttribute('data-eid'),10);
+    if (ev.button === 2) {                 // right-click: if outside selection, collapse to this row
+      if (!selectedEids[eid]) { selectedEids = {}; selectedEids[eid] = true; anchorEid = eid; updateSelDom(); refreshEditorForSelection(); }
+      return;
+    }
+    if (ev.shiftKey && anchorEid !== -1 && visibleEids.indexOf(anchorEid) !== -1) {
+      var a = visibleEids.indexOf(anchorEid), b = visibleEids.indexOf(eid);
+      if (b !== -1) { var lo=Math.min(a,b), hi=Math.max(a,b); selectedEids = {}; for (var k=lo;k<=hi;k++) selectedEids[visibleEids[k]] = true; primaryEid = eid; }
+    } else if (ev.ctrlKey || ev.metaKey) {
+      selectedEids[eid] = !selectedEids[eid]; anchorEid = eid; primaryEid = eid;
+    } else {
+      selectedEids = {}; selectedEids[eid] = true; anchorEid = eid; primaryEid = eid;
+    }
+    updateSelDom();
+    refreshEditorForSelection();
+  }
+
+  // ---- context menu ----
+  var ctx = document.getElementById('ctxmenu');
+  function onRowContext(ev) { ev.preventDefault(); showCtx(ev.pageX, ev.pageY); }
+  function showCtx(x, y) {
+    var ids = selList();
+    var n = ids.length;
+    var strById = {}; for (var i=0;i<allEntities.length;i++) strById[allEntities[i].eid] = allEntities[i].id;
+    ctx.innerHTML = '';
+    addCtx('Copy ID' + (n>1?' ('+n+')':''), function(){
+      var out = ids.map(function(e){return strById[e]||e;}).join('\n'); copyText(out);
+      toast('Copied ' + n + ' id' + (n>1?'s':''), 'ok');
+    });
+    addCtx('Delete' + (n>1?' ('+n+')':''), function(){
+      post({cmd:'delete', eids: ids});
+      for (var i=0;i<ids.length;i++) delete selectedEids[ids[i]];
+      updateSelDom(); refreshEditorForSelection();
+      toast('Deleted ' + n + ' entit' + (n>1?'ies':'y'), 'ok');
+    });
+    addCtx('Push to stack 0' + (n>1?' ('+n+')':''), function(){ post({cmd:'pushStack', eids: ids}); });
+    ctx.style.left = x+'px'; ctx.style.top = y+'px'; ctx.style.display = 'block';
+  }
+  function addCtx(label, fn) { var d=document.createElement('div'); d.textContent=label; d.addEventListener('click', function(){ hideCtx(); fn(); }); ctx.appendChild(d); }
+  function hideCtx() { ctx.style.display = 'none'; }
+  document.addEventListener('mousedown', function(e){ if (!ctx.contains(e.target)) hideCtx(); });
+  document.addEventListener('keydown', function(e){ if (e.key==='Escape') hideCtx(); });
+  document.getElementById('entityList').addEventListener('scroll', hideCtx);
+
+  // ---- state editor ----
+  function showPlaceholder(html) {
+    document.getElementById('editor').style.display = 'none';
+    var el = document.getElementById('selInfo'); el.style.display = 'flex'; el.innerHTML = html;
+    loaded = null; updateDirty();
+  }
+  function hideEditor() { showPlaceholder('Select an entity from the list.'); }
+  // The state editor edits ONE decl, so it only shows for a single selection. 2+ selected -> a placeholder
+  // that points at the right-click menu (the multi-entity actions). Called after any selection change.
+  function refreshEditorForSelection(push) {
+    var n = selCount();
+    if (n === 1) { primaryEid = selList()[0]; post({cmd:'select', eid: primaryEid}); }
+    else if (n === 0) { primaryEid = -1; showPlaceholder('Select an entity from the list.'); }
+    else { primaryEid = -1; showPlaceholder(n + ' entities selected.<br>Select a single entity to edit its decl.<br><span style="color:#aaa;">Right-click for actions on all ' + n + '.</span>'); }
+    if (push !== false) pushSelectionToEditor();
+  }
+  function showState(d) {
+    document.getElementById('selInfo').style.display='none';
+    document.getElementById('editor').style.display='flex';
+    document.getElementById('declText').value = d.decl || '';
+    document.getElementById('fInherit').value = d.inherit || '';
+    document.getElementById('fClassname').value = d.classname || '';
+    document.getElementById('fDisplayname').value = d.displayname || '';
+    loaded = { decl:d.decl||'', inherit:d.inherit||'', classname:d.classname||'', displayname:d.displayname||'' };
+    document.getElementById('saveMsg').textContent = '';
+    updateDirty();
+    if (!inheritsRequested) { inheritsRequested = true; post({cmd:'enumInherits'}); }  // full inherit list, once
+    post({cmd:'enumClasses', inherit: d.inherit || ''});                                // classes valid for THIS inherit
+  }
+  function curState() {
+    return { decl:document.getElementById('declText').value, inherit:document.getElementById('fInherit').value,
+             classname:document.getElementById('fClassname').value, displayname:document.getElementById('fDisplayname').value };
+  }
+  function isDirty() {
+    if (!loaded) return false; var c = curState();
+    return c.decl!==loaded.decl || c.inherit!==loaded.inherit || c.classname!==loaded.classname || c.displayname!==loaded.displayname;
+  }
+  function updateDirty() {
+    var d = isDirty();
+    document.getElementById('saveBtn').disabled = !d;
+    document.getElementById('revertBtn').disabled = !d;
+  }
+  function doSave() {
+    if (primaryEid < 0 || !isDirty()) return;
+    var c = curState();
+    if (!c.classname.replace(/\s/g,'') || !c.inherit.replace(/\s/g,'')) { toast("Classname and Inherit can't be blank", 'err'); return; }
+    document.getElementById('saveMsg').textContent = 'saving...';
+    post({ cmd:'save', eid:primaryEid, decl:c.decl, classname:c.classname, inherit:c.inherit, displayname:c.displayname });
+  }
+  function doRevert() { if (loaded) { document.getElementById('declText').value=loaded.decl; document.getElementById('fInherit').value=loaded.inherit; document.getElementById('fClassname').value=loaded.classname; document.getElementById('fDisplayname').value=loaded.displayname; updateDirty(); } }
+
+  function flash(t) { document.getElementById('stamp').textContent = t; }
+
+  // sliding toast for user-action confirmations (kind: '', 'ok', 'warn', 'err')
+  function toast(text, kind) {
+    var host = document.getElementById('toastHost');
+    var el = document.createElement('div');
+    el.className = 'toast' + (kind ? (' ' + kind) : '');
+    el.textContent = text;
+    host.appendChild(el);
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){ el.classList.add('show'); }); });
+    setTimeout(function(){ el.classList.remove('show'); setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 320); }, 2800);
+  }
+
+  // ---- messages from native ----
+  function onMessage(d) {
+    if (d.kind === 'list') {
+      document.getElementById('bridgeDot').className = 'dot ok';
+      document.getElementById('verText').textContent = 'SnapHak ' + (d.version || '');
+      document.getElementById('connText').textContent = '(Connected)';
+      document.getElementById('edReady').textContent = d.editorReady ? 'yes' : 'no';
+      flash('updated ' + new Date().toLocaleTimeString());
+      allEntities = d.entities || [];
+      // drop selections for entities that no longer exist
+      var exist = {}; for (var i=0;i<allEntities.length;i++) exist[allEntities[i].eid]=true;
+      for (var k in selectedEids) if (selectedEids[k] && !exist[k]) delete selectedEids[k];
+      renderList();
+    } else if (d.kind === 'state') {
+      if (d.auto && (isDirty() || d.eid !== primaryEid)) return;   // never clobber unsaved edits
+      if (d.eid === primaryEid || !d.auto) showState(d);
+    } else if (d.kind === 'saveResult') {
+      var m = document.getElementById('saveMsg');
+      if (d.result === 1) { m.textContent = 'saved to decl.'; toast('Saved to decl', 'ok'); }
+      else if (d.result === 0) { m.textContent = 'refused: incompatible class + inherit.'; toast('Save refused: incompatible class + inherit', 'warn'); }
+      else { m.textContent = 'save failed (see log).'; toast('Save failed (see log)', 'err'); }
+    } else if (d.kind === 'editorSelect') {
+      selectedEids = {}; var esel = d.eids || []; for (var ei=0; ei<esel.length; ei++) selectedEids[esel[ei]] = true;
+      anchorEid = esel.length ? esel[esel.length-1] : -1;
+      updateSelDom(); refreshEditorForSelection(false);   // came FROM the editor -> don't push back
+    } else if (d.kind === 'inherits') {
+      inheritItems = d.items || []; if (inheritCombo) inheritCombo.refresh();
+    } else if (d.kind === 'classes') {
+      classItems = d.items || []; if (classCombo) classCombo.refresh();
+    } else if (d.kind === 'info') {
+      toast(d.text || '', 'warn');
+    }
+  }
+
+  if (window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener('message', function(e){ onMessage(e.data); });
+  } else {
+    // browser preview: populate + auto-select the Block Box so the panel shows populated on load.
+    document.getElementById('connText').textContent = '(Preview - no backend)';
+    document.getElementById('bridgeDot').className = 'dot ok';
+    setTimeout(function(){
+      onMessage(previewList());
+      selectedEids = {}; selectedEids[65] = true; anchorEid = 65; updateSelDom();
+      refreshEditorForSelection();
+    }, 0);
+  }
+
+  document.getElementById('refreshBtn').addEventListener('click', function(){ post({cmd:'refresh'}); });
+  document.getElementById('filterBox').addEventListener('input', renderList);
+  document.getElementById('showHidden').addEventListener('change', renderList);
+  // The two sync directions are mutually exclusive for now (both-on could freeze on multi-select).
+  document.getElementById('syncEditor').addEventListener('change', function(){
+    if (this.checked) { document.getElementById('selectInEditor').checked = false; selectMode = false; }
+    post({cmd:'setSync', on: this.checked ? 1 : 0});
+  });
+  document.getElementById('selectInEditor').addEventListener('change', function(){
+    if (this.checked) { document.getElementById('syncEditor').checked = false; post({cmd:'setSync', on:0}); }
+    selectMode = this.checked;
+    if (selectMode) pushSelectionToEditor();
+  });
+  document.getElementById('saveBtn').addEventListener('click', doSave);
+  document.getElementById('revertBtn').addEventListener('click', doRevert);
+  ['declText','fDisplayname'].forEach(function(id){ document.getElementById(id).addEventListener('input', updateDirty); });
+  inheritCombo = Combo('cInherit', function(){ return inheritItems; }, updateDirty, function(){ updateDirty(); post({cmd:'enumClasses', inherit: document.getElementById('fInherit').value}); });
+  classCombo = Combo('cClassname', function(){ return classItems; }, updateDirty, updateDirty);
+  // typing an inherit then blurring/Enter also re-fetches its valid classes
+  document.getElementById('fInherit').addEventListener('change', function(){ post({cmd:'enumClasses', inherit: this.value}); });
+
+  post({cmd:'refresh'});
+</script>
+</body>
+</html>
