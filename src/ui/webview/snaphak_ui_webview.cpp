@@ -26,6 +26,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
+#include <map>
+#include <utility>
 
 #include "WebView2.h"
 #include "snaphak_iface.h"
@@ -62,11 +65,44 @@ static std::vector<int> g_delete_eids;
 
 static volatile bool g_pending_select = false;   /* list -> editor selection push ("Select in editor") */
 static std::vector<int> g_select_eids;
+static volatile bool g_pending_deselect = false;  /* explicit "Deselect" button -- clear_selection escape hatch */
 static char g_enumbuf[262144];                   /* packed-string scratch for enum_inherits / enum_valid_classes */
 
 static volatile bool g_cam_lock = false;         /* Camera Origin "Lock Position" */
 static float         g_cam_xyz[3] = {0.0f, 0.0f, 0.0f};
 static volatile bool g_cam_write_once = false;   /* a committed field edit -> write the vec3 once */
+
+static volatile bool g_pending_create_prefab = false;
+static std::string   g_create_prefab_name;
+static int           g_create_result = 0;        /* 1 ok; 0 empty editor selection; -1 resolve/serialize/write failure */
+static int           g_last_selcount = -1;       /* last broadcast editor-selection count (Create-button gating) */
+
+static volatile bool g_pending_delete_prefab = false;
+static std::string   g_delete_prefab_name, g_delete_prefab_folder;   /* folder="" -> root (prefabs/) */
+static int           g_delete_result = 0;        /* 1 ok; 0 DeleteFile failed (missing/locked); -1 resolve failed */
+
+static volatile bool g_pending_rename_prefab = false;
+static std::string   g_rename_prefab_old, g_rename_prefab_new, g_rename_prefab_folder;
+static int           g_rename_result = 0;        /* 1 ok; 0 MoveFile failed (dest exists/missing/locked); -1 resolve failed */
+
+/* Folders: one real level of subdirectories under %USERPROFILE%\snaphak\prefabs\ (no nested-within-nested).
+ * folder="" always means the root prefabs\ dir. The folder/file IS the truth -- no separate manifest. */
+static volatile bool g_pending_create_folder = false;
+static std::string   g_create_folder_name;
+static int           g_create_folder_result = 0;   /* 1 ok; 0 already exists / empty name; -1 CreateDirectory failed */
+
+static volatile bool g_pending_rename_folder = false;
+static std::string   g_rename_folder_old, g_rename_folder_new;
+static int           g_rename_folder_result = 0;   /* 1 ok; 0 MoveFile failed (dest exists/locked); -1 resolve failed */
+
+static volatile bool g_pending_delete_folder = false;
+static std::string   g_delete_folder_name;
+static int           g_delete_folder_result = 0;   /* 1 ok (removed, any contents moved to root); 0 RemoveDirectory failed
+                                                     * (a name collision at root left a file behind); -1 resolve failed */
+
+static volatile bool g_pending_move_prefab = false;
+static std::string   g_move_prefab_name, g_move_prefab_from, g_move_prefab_to;
+static int           g_move_prefab_result = 0;      /* 1 ok; 0 MoveFile failed (dest name collision); -1 resolve failed */
 
 #define POC_MAX_ENTS 8192
 #define POC_ID_CAP   384
@@ -360,6 +396,167 @@ static void poc_apply_select_in_editor()
     } __except (EXCEPTION_EXECUTE_HANDLER) { poc_log("select-in-editor: SEH in apply"); }
     poc_log("select-in-editor: apply done");
 }
+/* explicit Deselect: clear_selection only, no re-add. A reliable escape hatch since a native click on
+ * empty space doesn't clear a selection that was set via add_to_selection (confirmed: native click/drag
+ * selection deselects fine on its own -- only our externally-driven selection gets stuck). */
+static void poc_apply_deselect()
+{
+    __try {
+        if (g_iface && g_iface->vtbl && g_iface->vtbl->clear_selection) g_iface->vtbl->clear_selection(g_iface);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { poc_log("deselect: SEH in apply"); }
+}
+/* __try can't share a function with a C++ object needing unwinding (/EHsc, C2712) -- this leaf has only
+ * PODs in scope, so the SEH guard around the engine call is safe here. */
+static int poc_serialize_selection_raw(char *buf, int cap)
+{
+    int n = 0;
+    __try { n = g_iface->vtbl->serialize_selection(g_iface, buf, cap); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { n = 0; }
+    return n;
+}
+/* Create-from-selection: resolve the file path (+0xc0), serialize the CURRENT editor selection (+0xb0,
+ * same slot the Qt sh_prefab_create_clicked uses), fwrite it. g_create_result: 1 ok, 0 nothing was
+ * selected (serialize returned empty), -1 resolve/serialize/write failure. Real prefabs on disk run up
+ * to ~370 KB (Sync Entities for Demons.json), so the scratch buffer is generously sized at 4 MB. */
+static void poc_apply_create_prefab()
+{
+    g_create_result = -1;
+    { char l[300]; _snprintf_s(l, sizeof l, _TRUNCATE, "create-prefab: START name='%s'", g_create_prefab_name.c_str()); poc_log(l); }
+    if (!g_iface || !g_iface->vtbl || !g_iface->vtbl->resolve_prefab_path || !g_iface->vtbl->serialize_selection || g_create_prefab_name.empty()) {
+        poc_log("create-prefab: ABORT (iface/slot/name missing)");
+        return;
+    }
+    char path[1024]; path[0] = '\0';
+    std::string fname = g_create_prefab_name + ".json";
+    if (!g_iface->vtbl->resolve_prefab_path(g_iface, "prefabs/", fname.c_str(), path, (int)sizeof path) || !path[0]) {
+        poc_log("create-prefab: ABORT (resolve_prefab_path failed)");
+        return;
+    }
+    { char l[1200]; _snprintf_s(l, sizeof l, _TRUNCATE, "create-prefab: path='%s' -- about to serialize_selection (+0xb0)", path); poc_log(l); }
+    static char buf[4 * 1024 * 1024];
+    int n = poc_serialize_selection_raw(buf, (int)sizeof buf);
+    poc_logf("create-prefab: serialize_selection returned n=%lu", (unsigned long)n);
+    if (n <= 0) { g_create_result = 0; return; }
+    FILE *fp = nullptr;
+    if (fopen_s(&fp, path, "wb") != 0 || !fp) { poc_log("create-prefab: ABORT (fopen failed)"); return; }
+    fwrite(buf, 1, (size_t)n, fp);
+    fclose(fp);
+    poc_log("create-prefab: WROTE file ok");
+    g_create_result = 1;
+}
+/* folder="" -> the root prefabs\ dir; else prefabs\<folder>\ (one real level, no nesting). Shared by every
+ * prefab/folder file op below so they all agree on where a folder actually lives on disk. */
+static bool poc_prefab_dir(const std::string &folder, char *out, int cap)
+{
+    if (!g_iface || !g_iface->vtbl || !g_iface->vtbl->resolve_prefab_path) { if (cap) out[0] = '\0'; return false; }
+    std::string prefix = folder.empty() ? "prefabs/" : ("prefabs/" + folder + "/");
+    out[0] = '\0';
+    return g_iface->vtbl->resolve_prefab_path(g_iface, prefix.c_str(), "", out, cap) && out[0] != '\0';
+}
+static bool poc_prefab_file_path(const std::string &folder, const std::string &name, char *out, int cap)
+{
+    if (!g_iface || !g_iface->vtbl || !g_iface->vtbl->resolve_prefab_path) { if (cap) out[0] = '\0'; return false; }
+    std::string prefix = folder.empty() ? "prefabs/" : ("prefabs/" + folder + "/");
+    std::string fname = name + ".json";
+    out[0] = '\0';
+    return g_iface->vtbl->resolve_prefab_path(g_iface, prefix.c_str(), fname.c_str(), out, cap) && out[0] != '\0';
+}
+static void poc_strip_trailing_sep(char *s)
+{
+    size_t n = strlen(s);
+    if (n && (s[n - 1] == '\\' || s[n - 1] == '/')) s[n - 1] = '\0';
+}
+/* list the *.json stems directly inside a resolved directory (non-recursive), sorted. */
+static void poc_list_json_dir(const std::string &dirPath, std::vector<std::string> &names)
+{
+    std::string pattern = dirPath + "*.json";
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        std::string fn = fd.cFileName;
+        if (fn.size() > 5 && fn.compare(fn.size() - 5, 5, ".json") == 0) names.push_back(fn.substr(0, fn.size() - 5));
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    std::sort(names.begin(), names.end());
+}
+
+/* Delete a prefab file: pure Win32 (no engine) -- resolve the path (+0xc0 is SHGetFolderPathA, no engine
+ * touch) then DeleteFileA. result: 1 deleted, 0 DeleteFile failed (missing/locked), -1 resolve failed. */
+static void poc_apply_delete_prefab()
+{
+    g_delete_result = -1;
+    if (g_delete_prefab_name.empty()) return;
+    char path[1024];
+    if (!poc_prefab_file_path(g_delete_prefab_folder, g_delete_prefab_name, path, (int)sizeof path)) return;
+    g_delete_result = DeleteFileA(path) ? 1 : 0;
+}
+/* Rename a prefab file WITHIN its current folder: MoveFileA old->new. MoveFileA refuses to overwrite an
+ * existing destination (returns 0), so a name collision is a safe no-op the UI reports; the JS also
+ * pre-checks. result: 1 ok, 0 MoveFile failed (dest exists / source missing / locked), -1 resolve failed. */
+static void poc_apply_rename_prefab()
+{
+    g_rename_result = -1;
+    if (g_rename_prefab_old.empty() || g_rename_prefab_new.empty()) return;
+    char oldp[1024], newp[1024];
+    if (!poc_prefab_file_path(g_rename_prefab_folder, g_rename_prefab_old, oldp, (int)sizeof oldp)) return;
+    if (!poc_prefab_file_path(g_rename_prefab_folder, g_rename_prefab_new, newp, (int)sizeof newp)) return;
+    g_rename_result = MoveFileA(oldp, newp) ? 1 : 0;
+}
+/* Move a prefab from one folder to another (drag-and-drop target): MoveFileA across the two resolved
+ * paths. Refuses to overwrite an existing same-named file at the destination (JS pre-checks too). */
+static void poc_apply_move_prefab()
+{
+    g_move_prefab_result = -1;
+    if (g_move_prefab_name.empty()) return;
+    char oldp[1024], newp[1024];
+    if (!poc_prefab_file_path(g_move_prefab_from, g_move_prefab_name, oldp, (int)sizeof oldp)) return;
+    if (!poc_prefab_file_path(g_move_prefab_to, g_move_prefab_name, newp, (int)sizeof newp)) return;
+    g_move_prefab_result = MoveFileA(oldp, newp) ? 1 : 0;
+}
+/* Create a real subdirectory under prefabs\. result: 1 created, 0 empty name / already exists, -1 failed. */
+static void poc_apply_create_folder()
+{
+    g_create_folder_result = -1;
+    if (g_create_folder_name.empty()) { g_create_folder_result = 0; return; }
+    char dir[1024];
+    if (!poc_prefab_dir(g_create_folder_name, dir, (int)sizeof dir)) return;
+    poc_strip_trailing_sep(dir);
+    if (CreateDirectoryA(dir, nullptr)) { g_create_folder_result = 1; return; }
+    g_create_folder_result = (GetLastError() == ERROR_ALREADY_EXISTS) ? 0 : -1;
+}
+/* Rename a folder: MoveFileA also renames directories. result: 1 ok, 0 dest exists/locked, -1 resolve failed. */
+static void poc_apply_rename_folder()
+{
+    g_rename_folder_result = -1;
+    if (g_rename_folder_old.empty() || g_rename_folder_new.empty()) return;
+    char oldd[1024], newd[1024];
+    if (!poc_prefab_dir(g_rename_folder_old, oldd, (int)sizeof oldd)) return;
+    if (!poc_prefab_dir(g_rename_folder_new, newd, (int)sizeof newd)) return;
+    poc_strip_trailing_sep(oldd); poc_strip_trailing_sep(newd);
+    g_rename_folder_result = MoveFileA(oldd, newd) ? 1 : 0;
+}
+/* Delete a folder: move any remaining prefabs back to root first (a same-named file already at root is
+ * left behind rather than silently overwritten -- that leaves the folder non-empty, so RemoveDirectory then
+ * fails and reports it honestly instead of losing data), then RemoveDirectoryA. */
+static void poc_apply_delete_folder()
+{
+    g_delete_folder_result = -1;
+    if (g_delete_folder_name.empty()) return;
+    char dir[1024], rootDir[1024];
+    if (!poc_prefab_dir(g_delete_folder_name, dir, (int)sizeof dir)) return;
+    if (!poc_prefab_dir("", rootDir, (int)sizeof rootDir)) return;
+    std::vector<std::string> items;
+    poc_list_json_dir(dir, items);
+    for (size_t i = 0; i < items.size(); i++) {
+        std::string src = std::string(dir) + items[i] + ".json";
+        std::string dst = std::string(rootDir) + items[i] + ".json";
+        MoveFileA(src.c_str(), dst.c_str());
+    }
+    poc_strip_trailing_sep(dir);
+    g_delete_folder_result = RemoveDirectoryA(dir) ? 1 : 0;
+}
 /* Run enum_inherits (+0x278) or enum_valid_classes (+0x270) into buf; returns 1 + *pcount packed strings
  * (consecutive NUL-terminated, double-NUL end). SEH-guarded, no C++ objects. */
 static int poc_run_enum(int classes, const char *inherit, char *buf, int cap, int *pcount)
@@ -451,6 +648,124 @@ static void poc_send_enum(int classes, const char *inherit)
 }
 static void poc_post_json(const wchar_t *json) { if (g_webview) g_webview->PostWebMessageAsJson(json); }
 
+/* cheap targeted scan of a prefab JSON body (no full JSON parser, same "find key -> read quoted value"
+ * approach as json_get_wstr): the entity count is the number of exact `"idSnapEntity"` tokens (each entity's
+ * own "~type"; the prefab's OWN root "~type" is "idSnapEntityPrefab" -- a different exact token, so this
+ * can't double-count it). The per-class tally scans every `"className"` key (only entityDef objects have
+ * one) and groups by value. */
+static void poc_tally_prefab(const std::string &body, int *entityCount, std::vector<std::pair<std::string, int>> &tally)
+{
+    *entityCount = 0;
+    size_t pos = 0;
+    while ((pos = body.find("\"idSnapEntity\"", pos)) != std::string::npos) { (*entityCount)++; pos += 14; }
+
+    std::map<std::string, int> counts;
+    const std::string key = "\"className\"";
+    pos = 0;
+    while ((pos = body.find(key, pos)) != std::string::npos) {
+        size_t p = pos + key.size();
+        size_t colon = body.find(':', p);
+        if (colon == std::string::npos) break;
+        size_t q1 = body.find('"', colon + 1);
+        if (q1 == std::string::npos) break;
+        size_t q2 = body.find('"', q1 + 1);
+        if (q2 == std::string::npos) break;
+        counts[body.substr(q1 + 1, q2 - q1 - 1)]++;
+        pos = q2 + 1;
+    }
+    for (auto &kv : counts) tally.push_back(kv);
+}
+/* read a single prefab file (resolved via +0xc0) and push its entity count + per-class tally so the
+ * Prefabs tab detail pane can show real numbers instead of the old static mockup values. folder="" -> root. */
+static void poc_send_prefab_detail(const std::string &name, const std::string &folder)
+{
+    if (!g_webview) return;
+    int entityCount = 0;
+    std::vector<std::pair<std::string, int>> tally;
+    bool ok = false;
+    if (!name.empty()) {
+        char path[1024];
+        if (poc_prefab_file_path(folder, name, path, (int)sizeof path)) {
+            FILE *fp = nullptr;
+            if (fopen_s(&fp, path, "rb") == 0 && fp) {
+                fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
+                if (sz > 0) {
+                    std::string body; body.resize((size_t)sz);
+                    size_t got = fread(&body[0], 1, (size_t)sz, fp);
+                    body.resize(got);
+                    poc_tally_prefab(body, &entityCount, tally);
+                    ok = true;
+                }
+                fclose(fp);
+            }
+        }
+    }
+    std::wstring json = L"{\"kind\":\"prefabDetail\",\"name\":\""; json += poc_json_w(name.c_str());
+    json += L"\",\"ok\":"; json += ok ? L"true" : L"false";
+    json += L",\"count\":"; json += std::to_wstring(entityCount);
+    json += L",\"types\":[";
+    for (size_t i = 0; i < tally.size(); i++) {
+        if (i) json += L",";
+        json += L"{\"className\":\""; json += poc_json_w(tally[i].first.c_str());
+        json += L"\",\"count\":"; json += std::to_wstring(tally[i].second); json += L"}";
+    }
+    json += L"]}";
+    g_webview->PostWebMessageAsJson(json.c_str());
+}
+
+/* enumerate %USERPROFILE%\snaphak\prefabs\ (resolved via the +0xc0 interface slot, same path the OG/Qt
+ * Prefabs tab lists -- see sh_tabs.cpp sh_prefab_list_populate): the root *.json files, plus one real level
+ * of subdirectories (each a "folder"), each listing its own *.json files. No nested-within-nested. Empty
+ * (or missing dir) sends empty arrays so the UI can show its empty state. */
+static void poc_send_prefabs()
+{
+    if (!g_webview) return;
+    std::vector<std::string> rootNames;
+    std::vector<std::pair<std::string, std::vector<std::string>>> folders;
+    char rootDir[1024];
+    if (poc_prefab_dir("", rootDir, (int)sizeof rootDir)) {
+        poc_list_json_dir(rootDir, rootNames);
+
+        std::vector<std::string> subdirs;
+        std::string pattern = std::string(rootDir) + "*";
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                std::string dn = fd.cFileName;
+                if (dn == "." || dn == "..") continue;
+                subdirs.push_back(dn);
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+        }
+        std::sort(subdirs.begin(), subdirs.end());
+        for (size_t i = 0; i < subdirs.size(); i++) {
+            std::vector<std::string> items;
+            poc_list_json_dir(std::string(rootDir) + subdirs[i] + "\\", items);
+            folders.push_back(std::make_pair(subdirs[i], items));
+        }
+    }
+    std::wstring json = L"{\"kind\":\"prefabs\",\"root\":[";
+    for (size_t i = 0; i < rootNames.size(); i++) {
+        if (i) json += L",";
+        json += L"\""; json += poc_json_w(rootNames[i].c_str()); json += L"\"";
+    }
+    json += L"],\"folders\":[";
+    for (size_t i = 0; i < folders.size(); i++) {
+        if (i) json += L",";
+        json += L"{\"name\":\""; json += poc_json_w(folders[i].first.c_str()); json += L"\",\"items\":[";
+        const std::vector<std::string> &items = folders[i].second;
+        for (size_t j = 0; j < items.size(); j++) {
+            if (j) json += L",";
+            json += L"\""; json += poc_json_w(items[j].c_str()); json += L"\"";
+        }
+        json += L"]}";
+    }
+    json += L"]}";
+    g_webview->PostWebMessageAsJson(json.c_str());
+}
+
 /* ------------------------------------------------------------------ window / WebView2 -------------- */
 static LRESULT CALLBACK PocWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -483,8 +798,11 @@ static void poc_create_window()
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"SnapHakStudioWebView";
     wc.style = CS_NOCLOSE;   /* remove the native close (X) button -- can't close the UI from the editor */
     RegisterClassExW(&wc);
+    /* default size big enough to show the Entities list + state editor (or the Prefabs folder tree + card)
+     * side by side with no clipping on a typical 1080p+ display, without needing a manual resize on first
+     * launch. Fits comfortably within 1920x1080 with room for the taskbar. */
     g_hwnd = CreateWindowExW(0, L"SnapHakStudioWebView", L"Snapmap+",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1040, 720, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1440, 900, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     /* force a frame recalculation now so WM_NCCALCSIZE strips the title bar BEFORE the window is first
      * shown -- otherwise the native frame lingers until the first resize/move. */
     if (g_hwnd)
@@ -501,6 +819,39 @@ static HRESULT on_message(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventA
         if (json_get_wstr(json, L"cmd", cmd)) {
             if (cmd == L"refresh") {
                 poc_send_list();
+            } else if (cmd == L"listPrefabs") {
+                poc_send_prefabs();
+            } else if (cmd == L"selectPrefab") {
+                std::wstring nm, fo; json_get_wstr(json, L"name", nm); json_get_wstr(json, L"folder", fo);
+                poc_send_prefab_detail(w_to_utf8(nm), w_to_utf8(fo));
+            } else if (cmd == L"createPrefab") {
+                std::wstring nm; json_get_wstr(json, L"name", nm);
+                g_create_prefab_name = w_to_utf8(nm);
+                g_pending_create_prefab = true;
+            } else if (cmd == L"deletePrefab") {
+                std::wstring nm, fo; json_get_wstr(json, L"name", nm); json_get_wstr(json, L"folder", fo);
+                g_delete_prefab_name = w_to_utf8(nm); g_delete_prefab_folder = w_to_utf8(fo);
+                g_pending_delete_prefab = true;
+            } else if (cmd == L"renamePrefab") {
+                std::wstring o, nn, fo; json_get_wstr(json, L"oldName", o); json_get_wstr(json, L"newName", nn); json_get_wstr(json, L"folder", fo);
+                g_rename_prefab_old = w_to_utf8(o); g_rename_prefab_new = w_to_utf8(nn); g_rename_prefab_folder = w_to_utf8(fo);
+                g_pending_rename_prefab = true;
+            } else if (cmd == L"createFolder") {
+                std::wstring nm; json_get_wstr(json, L"name", nm);
+                g_create_folder_name = w_to_utf8(nm);
+                g_pending_create_folder = true;
+            } else if (cmd == L"renameFolder") {
+                std::wstring o, nn; json_get_wstr(json, L"oldName", o); json_get_wstr(json, L"newName", nn);
+                g_rename_folder_old = w_to_utf8(o); g_rename_folder_new = w_to_utf8(nn);
+                g_pending_rename_folder = true;
+            } else if (cmd == L"deleteFolder") {
+                std::wstring nm; json_get_wstr(json, L"name", nm);
+                g_delete_folder_name = w_to_utf8(nm);
+                g_pending_delete_folder = true;
+            } else if (cmd == L"movePrefabToFolder") {
+                std::wstring nm, fromf, tof; json_get_wstr(json, L"name", nm); json_get_wstr(json, L"fromFolder", fromf); json_get_wstr(json, L"toFolder", tof);
+                g_move_prefab_name = w_to_utf8(nm); g_move_prefab_from = w_to_utf8(fromf); g_move_prefab_to = w_to_utf8(tof);
+                g_pending_move_prefab = true;
             } else if (cmd == L"select") {
                 int eid = -1;
                 if (json_get_int(json, L"eid", &eid)) { g_displayed_eid = eid; poc_send_state(eid, false); }
@@ -512,6 +863,8 @@ static HRESULT on_message(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventA
             } else if (cmd == L"selectInEditor") {
                 json_get_intarray(json, L"eids", g_select_eids);
                 g_pending_select = true;   /* applied under the loop mutex */
+            } else if (cmd == L"deselect") {
+                g_pending_deselect = true;
             } else if (cmd == L"enumInherits") {
                 poc_send_enum(0, nullptr);
             } else if (cmd == L"enumClasses") {
@@ -614,7 +967,9 @@ static void poc_think_loop()
     unsigned frame = 0;
     for (;;) {
         frame++;
-        bool did_save = false, did_delete = false;
+        bool did_save = false, did_delete = false, did_create_prefab = false;
+        bool did_delete_prefab = false, did_rename_prefab = false;
+        bool did_create_folder = false, did_rename_folder = false, did_delete_folder = false, did_move_prefab = false;
         EnterCriticalSection(&g_loop->mtx);
         if (g_iface && g_iface->vtbl && g_iface->vtbl->drain_work_queue) g_iface->vtbl->drain_work_queue(g_iface);
         if (g_pending_save)   { poc_apply_save();    g_pending_save = false;   did_save = true; }
@@ -626,6 +981,22 @@ static void poc_think_loop()
             if (g_select_eids.size() == 1) g_displayed_eid = g_select_eids[0];
             g_select_eids.clear(); g_pending_select = false;
         }
+        if (g_pending_deselect) {
+            poc_apply_deselect();
+            g_last_editor_sel = -1; g_last_sel_sig = 0;
+            g_pending_deselect = false;
+        }
+        if (g_pending_create_prefab) {
+            poc_apply_create_prefab();
+            g_pending_create_prefab = false;
+            did_create_prefab = true;
+        }
+        if (g_pending_delete_prefab) { poc_apply_delete_prefab(); g_pending_delete_prefab = false; did_delete_prefab = true; }
+        if (g_pending_rename_prefab) { poc_apply_rename_prefab(); g_pending_rename_prefab = false; did_rename_prefab = true; }
+        if (g_pending_create_folder) { poc_apply_create_folder(); g_pending_create_folder = false; did_create_folder = true; }
+        if (g_pending_rename_folder) { poc_apply_rename_folder(); g_pending_rename_folder = false; did_rename_folder = true; }
+        if (g_pending_delete_folder) { poc_apply_delete_folder(); g_pending_delete_folder = false; did_delete_folder = true; }
+        if (g_pending_move_prefab)   { poc_apply_move_prefab();   g_pending_move_prefab = false;   did_move_prefab = true; }
         /* Camera Origin: hold the locked origin every frame (or flush one committed edit). */
         if (g_cam_lock || g_cam_write_once) { poc_cam_write(); g_cam_write_once = false; }
         LeaveCriticalSection(&g_loop->mtx);
@@ -637,6 +1008,51 @@ static void poc_think_loop()
             if (g_save_eid >= 0) poc_send_state(g_save_eid, false);
         }
         if (did_delete) poc_send_list();
+        if (did_create_prefab) {
+            std::wstring m = L"{\"kind\":\"createPrefabResult\",\"result\":"; m += std::to_wstring(g_create_result);
+            m += L",\"name\":\""; m += poc_json_w(g_create_prefab_name.c_str()); m += L"\"}";
+            poc_post_json(m.c_str());
+            if (g_create_result == 1) poc_send_prefabs();
+        }
+        if (did_delete_prefab) {
+            std::wstring m = L"{\"kind\":\"deletePrefabResult\",\"result\":"; m += std::to_wstring(g_delete_result);
+            m += L",\"name\":\""; m += poc_json_w(g_delete_prefab_name.c_str()); m += L"\"}";
+            poc_post_json(m.c_str());
+            if (g_delete_result == 1) poc_send_prefabs();
+        }
+        if (did_rename_prefab) {
+            std::wstring m = L"{\"kind\":\"renamePrefabResult\",\"result\":"; m += std::to_wstring(g_rename_result);
+            m += L",\"oldName\":\""; m += poc_json_w(g_rename_prefab_old.c_str());
+            m += L"\",\"newName\":\""; m += poc_json_w(g_rename_prefab_new.c_str()); m += L"\"}";
+            poc_post_json(m.c_str());
+            if (g_rename_result == 1) poc_send_prefabs();
+        }
+        if (did_create_folder) {
+            std::wstring m = L"{\"kind\":\"createFolderResult\",\"result\":"; m += std::to_wstring(g_create_folder_result);
+            m += L",\"name\":\""; m += poc_json_w(g_create_folder_name.c_str()); m += L"\"}";
+            poc_post_json(m.c_str());
+            if (g_create_folder_result == 1) poc_send_prefabs();
+        }
+        if (did_rename_folder) {
+            std::wstring m = L"{\"kind\":\"renameFolderResult\",\"result\":"; m += std::to_wstring(g_rename_folder_result);
+            m += L",\"oldName\":\""; m += poc_json_w(g_rename_folder_old.c_str());
+            m += L"\",\"newName\":\""; m += poc_json_w(g_rename_folder_new.c_str()); m += L"\"}";
+            poc_post_json(m.c_str());
+            if (g_rename_folder_result == 1) poc_send_prefabs();
+        }
+        if (did_delete_folder) {
+            std::wstring m = L"{\"kind\":\"deleteFolderResult\",\"result\":"; m += std::to_wstring(g_delete_folder_result);
+            m += L",\"name\":\""; m += poc_json_w(g_delete_folder_name.c_str()); m += L"\"}";
+            poc_post_json(m.c_str());
+            if (g_delete_folder_result == 1) poc_send_prefabs();
+        }
+        if (did_move_prefab) {
+            std::wstring m = L"{\"kind\":\"movePrefabResult\",\"result\":"; m += std::to_wstring(g_move_prefab_result);
+            m += L",\"name\":\""; m += poc_json_w(g_move_prefab_name.c_str());
+            m += L"\",\"toFolder\":\""; m += poc_json_w(g_move_prefab_to.c_str()); m += L"\"}";
+            poc_post_json(m.c_str());
+            if (g_move_prefab_result == 1) poc_send_prefabs();
+        }
 
         if (g_webview_ready) {
             bool ready = poc_editor_ready() != 0;
@@ -650,10 +1066,17 @@ static void poc_think_loop()
                 uint64_t sig = poc_list_sig(n);
                 if (sig != g_last_list_sig) { g_last_list_sig = sig; poc_emit_list(n, rdy); }
 
+                /* live editor-selection COUNT, independent of "Follow editor selection" -- the Prefabs tab's
+                 * "Create from selection (N)" button needs this regardless of sync mode. */
+                int selids[64];
+                int sn = poc_get_selection(selids, 64);
+                if (sn != g_last_selcount) {
+                    g_last_selcount = sn;
+                    wchar_t m[64]; _snwprintf_s(m, _countof(m), _TRUNCATE, L"{\"kind\":\"selCount\",\"count\":%d}", sn);
+                    poc_post_json(m);
+                }
                 if (g_sync_on) {
                     /* mirror the WHOLE editor selection (any N) into the list, only when it changes. */
-                    int selids[64];
-                    int sn = poc_get_selection(selids, 64);
                     for (int a = 1; a < sn; a++) { int v = selids[a]; int b = a - 1; while (b >= 0 && selids[b] > v) { selids[b+1] = selids[b]; b--; } selids[b+1] = v; }
                     uint64_t sig = 1469598103934665603ull;
                     for (int a = 0; a < sn; a++) sig = hint(sig, selids[a]);

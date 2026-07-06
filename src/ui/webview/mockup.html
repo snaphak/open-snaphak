@@ -130,6 +130,7 @@
   .pf-item.selected { background: var(--sel); color: var(--selText); }
   .pf-item.dragging { opacity: 0.4; }
   .pf-folder.drop-target > .pf-folder-head { background: var(--sel); color: var(--selText); }
+  #prefabTree.drop-target-root { outline: 1px dashed var(--accent); outline-offset: -1px; }
   .pf-folder-del { margin-left: auto; padding: 0 4px; color: var(--muted); opacity: 0; }
   .pf-folder-head:hover .pf-folder-del { opacity: 1; }
   .pf-folder-del:hover { color: #a3352f; }
@@ -202,7 +203,10 @@
       <div class="opts">
         <label><input type="checkbox" id="showHidden"> Show hidden entities</label>
         <label title="The list follows whatever you select in the SnapMap 3D editor"><input type="checkbox" id="syncEditor"> Follow editor selection</label>
-        <label title="Selecting entities here selects them in the SnapMap 3D editor"><input type="checkbox" id="selectInEditor"> Select in 3D editor</label>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <label title="Selecting entities here selects them in the SnapMap 3D editor"><input type="checkbox" id="selectInEditor"> Select in 3D editor</label>
+          <button class="btn" id="deselectBtn" style="display:none; padding:2px 8px; font-size:10px;" title="Clear the 3D editor selection (native click-off can get stuck)">Deselect</button>
+        </div>
       </div>
       <div class="entity-list" id="entityList"><div class="list-empty">Waiting for the map...</div></div>
       <div class="list-controls">
@@ -228,28 +232,7 @@
 
   <div class="content" id="panel-prefabs" style="display:none;">
     <div class="left-pane">
-      <div class="entity-list" id="prefabTree">
-        <div class="pf-folder pf-open">
-          <div class="pf-folder-head"><span class="pf-caret">&#9662;</span> <span class="pf-fname">Doors</span><span class="pf-folder-del" title="Delete folder">&#10005;</span></div>
-          <div class="pf-folder-body">
-            <div class="pf-item selected" draggable="true">AirLock Door</div>
-          </div>
-        </div>
-        <div class="pf-folder pf-open">
-          <div class="pf-folder-head"><span class="pf-caret">&#9662;</span> <span class="pf-fname">Encounters</span><span class="pf-folder-del" title="Delete folder">&#10005;</span></div>
-          <div class="pf-folder-body">
-            <div class="pf-item" draggable="true">Corpse Dropper</div>
-            <div class="pf-item" draggable="true">Loadout Station 01</div>
-          </div>
-        </div>
-        <div class="pf-folder pf-open">
-          <div class="pf-folder-head"><span class="pf-caret">&#9662;</span> <span class="pf-fname">Uncategorized</span><span class="pf-folder-del" title="Delete folder">&#10005;</span></div>
-          <div class="pf-folder-body">
-            <div class="pf-item" draggable="true">Stairs 384x192</div>
-            <div class="pf-item" draggable="true">UAC VTOL (Static) - Dredge</div>
-          </div>
-        </div>
-      </div>
+      <div class="entity-list" id="prefabTree"></div>
       <div class="list-controls">
         <input type="text" id="prefabFilter" placeholder="Filter prefabs...">
         <button class="btn" id="newFolderBtn">New Folder</button>
@@ -257,20 +240,17 @@
       <div style="margin-top:6px;"><button class="btn primary" id="prefabCreateBtn">Create from selection</button></div>
     </div>
     <div class="right-pane">
-      <div class="prefab-card" id="prefabCard">
+      <div class="muted" id="pcEmpty" style="padding:8px;">Select a prefab to see its details.</div>
+      <div class="prefab-card" id="prefabCard" style="display:none;">
         <div class="pc-header">
-          <input type="text" class="pc-name" id="pcName" value="AirLock Door">
+          <input type="text" class="pc-name" id="pcName" value="" readonly>
         </div>
-        <div class="pc-chips">
-          <span class="pc-chip">1 Blocking</span>
-          <span class="pc-chip">1 Door</span>
-          <span class="pc-chip">1 Trigger</span>
-        </div>
-        <div class="pc-meta muted">3 entities &middot; created Jul 3, 2026</div>
+        <div class="pc-chips" id="pcChips"></div>
+        <div class="pc-meta muted" id="pcMeta"></div>
         <label>Description</label>
-        <textarea class="pc-desc" id="pcDesc" placeholder="What is this prefab for?">A sealed two-door airlock with a trigger volume between.</textarea>
+        <textarea class="pc-desc" id="pcDesc" placeholder="Descriptions aren't stored yet -- a later step" disabled></textarea>
         <label>Tags</label>
-        <input type="text" id="pcTags" placeholder="doors, encounter, ..." value="doors, industrial">
+        <input type="text" id="pcTags" placeholder="Tags aren't stored yet -- a later step" disabled>
         <div class="pc-actions">
           <button class="btn primary" id="prefabLoadBtn">Load / Place</button>
           <button class="btn" id="prefabDeleteBtn">Delete</button>
@@ -429,6 +409,23 @@
     {eid:1,  id:'0_ind_totally_blank_room_4x/snapmaps/filter/user_filter_entity_1', name:'#str_prefilter_any_ai', hidden:true},
     {eid:49, id:'0_ind_totally_blank_room_4x/snapmaps/filter/droppable_49', name:'', hidden:true}
   ];
+  var previewPrefabs = {
+    root: ['Stairs 384x192', 'UAC VTOL (Static) - Dredge'],
+    folders: [
+      {name: 'Doors', items: ['AirLock Door']},
+      {name: 'Encounters', items: ['Corpse Dropper', 'Loadout Station 01']}
+    ]
+  };
+  function previewFolderIndex(name) { for (var i = 0; i < previewPrefabs.folders.length; i++) if (previewPrefabs.folders[i].name === name) return i; return -1; }
+  function previewFolderList(folder) { if (!folder) return previewPrefabs.root; var idx = previewFolderIndex(folder); return idx === -1 ? null : previewPrefabs.folders[idx].items; }
+  function previewSendPrefabs() { onMessage({kind:'prefabs', root: previewPrefabs.root, folders: previewPrefabs.folders}); }
+  var previewPrefabDetails = {
+    'AirLock Door': {count: 3, types: [{className:'idVolume_Trigger_Editable', count:1}, {className:'idDoor_Coop', count:2}]},
+    'Corpse Dropper': {count: 2, types: [{className:'idAI_Snapmap', count:1}, {className:'idVolume_Trigger_Editable', count:1}]},
+    'Loadout Station 01': {count: 45, types: [{className:'idDynamicStampEntity_Coop', count:20}, {className:'idVolume_Blocking', count:8}, {className:'idProp_Coop', count:5}, {className:'idSnapMapListener_Simple', count:3}, {className:'idVolume_Trigger_Editable', count:3}]},
+    'Stairs 384x192': {count: 1, types: [{className:'idVolume_Blocking', count:1}]},
+    'UAC VTOL (Static) - Dredge': {count: 4, types: [{className:'idProp_Coop', count:1}, {className:'idVolume_Blocking', count:3}]}
+  };
   var previewStates = {
     65: {decl:'edit = {\n\trenderModelInfo = {\n\t\tmodel = "models/mapobjects/snapmaps/box_trigger.lwo";\n\t\tscale = { x = 16; y = 128; z = 64; }\n\t}\n\tblockDemons = false;\n\tisVisible = true;\n\tisNetworkStatic = true;\n}', classname:'idVolume_Blocking', inherit:'snapmaps/volume/blocking', displayname:'Block Box'},
     61: {decl:'edit = {\n\tteam = "coop";\n\tisVisible = true;\n}', classname:'idPlayerStart_Coop', inherit:'player/coop', displayname:'My Player Start'},
@@ -452,6 +449,67 @@
       }
     }
     else if (o.cmd === 'delete') { previewEnts = previewEnts.filter(function(e){ return o.eids.indexOf(e.eid) < 0; }); onMessage(previewList()); }
+    else if (o.cmd === 'listPrefabs') { previewSendPrefabs(); }
+    else if (o.cmd === 'selectPrefab') {
+      var d = previewPrefabDetails[o.name];
+      onMessage(d ? {kind:'prefabDetail', name:o.name, ok:true, count:d.count, types:d.types}
+                  : {kind:'prefabDetail', name:o.name, ok:false});
+    }
+    else if (o.cmd === 'createPrefab') {
+      if (editorSelCount <= 0) { onMessage({kind:'createPrefabResult', result:0, name:o.name}); return; }
+      if (previewPrefabs.root.indexOf(o.name) === -1) previewPrefabs.root.push(o.name);
+      previewPrefabDetails[o.name] = {count: editorSelCount, types: [{className:'idPreviewOnly', count: editorSelCount}]};
+      onMessage({kind:'createPrefabResult', result:1, name:o.name});
+      previewSendPrefabs();
+    }
+    else if (o.cmd === 'deletePrefab') {
+      var list = previewFolderList(o.folder || '');
+      var di = list ? list.indexOf(o.name) : -1;
+      if (di === -1) { onMessage({kind:'deletePrefabResult', result:0, name:o.name}); return; }
+      list.splice(di, 1); delete previewPrefabDetails[o.name];
+      onMessage({kind:'deletePrefabResult', result:1, name:o.name});
+      previewSendPrefabs();
+    }
+    else if (o.cmd === 'renamePrefab') {
+      var rlist = previewFolderList(o.folder || '');
+      var ri = rlist ? rlist.indexOf(o.oldName) : -1;
+      if (ri === -1 || rlist.indexOf(o.newName) !== -1) { onMessage({kind:'renamePrefabResult', result:0, oldName:o.oldName, newName:o.newName}); return; }
+      rlist[ri] = o.newName;
+      previewPrefabDetails[o.newName] = previewPrefabDetails[o.oldName]; delete previewPrefabDetails[o.oldName];
+      onMessage({kind:'renamePrefabResult', result:1, oldName:o.oldName, newName:o.newName});
+      previewSendPrefabs();
+    }
+    else if (o.cmd === 'createFolder') {
+      if (previewFolderIndex(o.name) !== -1) { onMessage({kind:'createFolderResult', result:0, name:o.name}); return; }
+      previewPrefabs.folders.push({name:o.name, items:[]});
+      onMessage({kind:'createFolderResult', result:1, name:o.name});
+      previewSendPrefabs();
+    }
+    else if (o.cmd === 'renameFolder') {
+      var fidx = previewFolderIndex(o.oldName);
+      if (fidx === -1 || previewFolderIndex(o.newName) !== -1) { onMessage({kind:'renameFolderResult', result:0, oldName:o.oldName, newName:o.newName}); return; }
+      previewPrefabs.folders[fidx].name = o.newName;
+      onMessage({kind:'renameFolderResult', result:1, oldName:o.oldName, newName:o.newName});
+      previewSendPrefabs();
+    }
+    else if (o.cmd === 'deleteFolder') {
+      var didx = previewFolderIndex(o.name);
+      if (didx === -1) { onMessage({kind:'deleteFolderResult', result:0, name:o.name}); return; }
+      var moved = previewPrefabs.folders[didx].items;
+      for (var mi = 0; mi < moved.length; mi++) previewPrefabs.root.push(moved[mi]);
+      previewPrefabs.folders.splice(didx, 1);
+      onMessage({kind:'deleteFolderResult', result:1, name:o.name});
+      previewSendPrefabs();
+    }
+    else if (o.cmd === 'movePrefabToFolder') {
+      var fromList = previewFolderList(o.fromFolder || '');
+      var toList = previewFolderList(o.toFolder || '');
+      var fi = fromList ? fromList.indexOf(o.name) : -1;
+      if (fi === -1 || !toList || toList.indexOf(o.name) !== -1) { onMessage({kind:'movePrefabResult', result:0, name:o.name, toFolder:o.toFolder}); return; }
+      fromList.splice(fi, 1); toList.push(o.name);
+      onMessage({kind:'movePrefabResult', result:1, name:o.name, toFolder:o.toFolder});
+      previewSendPrefabs();
+    }
     else if (o.cmd === 'pushStack') { onMessage({kind:'info', text:'Push to stack 0: ' + o.eids.length + ' selected (preview only).'}); }
     else if (o.cmd === 'enumInherits') { onMessage({kind:'inherits', items:['snapmaps/volume/blocking','snapmaps/volume/trigger','player/coop','snapmaps/ai','snapmaps/variable','snapmaps/action/variable/integer','snapmaps/light','light','snapmaps/listener/ai']}); }
     else if (o.cmd === 'enumClasses') { onMessage({kind:'classes', inherit:o.inherit, items:['idVolume_Blocking','idVolume_Trigger','idVolume_Damage','idVolume_Water']}); }
@@ -654,7 +712,102 @@
       toast(d.text || '', 'warn');
     } else if (d.kind === 'camera') {
       setCamField('camX', d.x); setCamField('camY', d.y); setCamField('camZ', d.z);
+    } else if (d.kind === 'prefabs') {
+      renderPrefabList(d.root || [], d.folders || []);
+    } else if (d.kind === 'prefabDetail') {
+      renderPrefabDetail(d);
+    } else if (d.kind === 'selCount') {
+      editorSelCount = d.count; updateCreateBtn();
+    } else if (d.kind === 'createPrefabResult') {
+      if (d.result === 1) toast('Created "' + d.name + '"', 'ok');
+      else if (d.result === 0) toast('Nothing selected in the editor -- select entities first', 'warn');
+      else toast('Could not create "' + d.name + '" (see log)', 'err');
+    } else if (d.kind === 'deletePrefabResult') {
+      if (d.result === 1) {
+        toast('Deleted "' + d.name + '"', 'ok');
+        document.getElementById('prefabCard').style.display = 'none';
+        var empty = document.getElementById('pcEmpty'); empty.style.display = 'block'; empty.textContent = 'Select a prefab to see its details.';
+      } else if (d.result === 0) toast('Could not delete "' + d.name + '" (missing or in use)', 'err');
+      else toast('Could not delete "' + d.name + '" (see log)', 'err');
+    } else if (d.kind === 'renamePrefabResult') {
+      if (d.result === 1) toast('Renamed to "' + d.newName + '"', 'ok');
+      else if (d.result === 0) toast('Could not rename (the name may already exist)', 'err');
+      else toast('Could not rename "' + d.oldName + '" (see log)', 'err');
+    } else if (d.kind === 'createFolderResult') {
+      if (d.result === 1) toast('Created folder "' + d.name + '"', 'ok');
+      else if (d.result === 0) toast('A folder named "' + d.name + '" already exists', 'warn');
+      else toast('Could not create folder "' + d.name + '" (see log)', 'err');
+    } else if (d.kind === 'renameFolderResult') {
+      if (d.result === 1) toast('Renamed folder to "' + d.newName + '"', 'ok');
+      else if (d.result === 0) toast('Could not rename folder (the name may already exist)', 'err');
+      else toast('Could not rename folder "' + d.oldName + '" (see log)', 'err');
+    } else if (d.kind === 'deleteFolderResult') {
+      if (d.result === 1) toast('Folder deleted', 'ok');
+      else if (d.result === 0) toast('Could not fully delete the folder (a name collision left a file behind)', 'err');
+      else toast('Could not delete folder (see log)', 'err');
+    } else if (d.kind === 'movePrefabResult') {
+      if (d.result === 1) toast('Moved "' + d.name + '"' + (d.toFolder ? ' to "' + d.toFolder + '"' : ' to the root list'), 'ok');
+      else toast('Could not move "' + d.name + '" (a name collision, most likely)', 'err');
     }
+  }
+
+  // prefabs: root *.json files + one real level of subdirectories (folders), read fresh from disk on
+  // every refresh -- the filesystem IS the truth, no separate client-side folder state to desync.
+  var prefabData = {root: [], folders: []};
+  var currentPrefabNames = [];   // root names only -- Create-from-selection always targets root
+  function allPrefabNamesInFolder(folder) {
+    if (!folder) return prefabData.root.slice();
+    for (var i = 0; i < prefabData.folders.length; i++) if (prefabData.folders[i].name === folder) return prefabData.folders[i].items.slice();
+    return [];
+  }
+  function renderPrefabList(root, folders) {
+    prefabData = {root: root.slice(), folders: folders.map(function(f){ return {name: f.name, items: (f.items || []).slice()}; })};
+    currentPrefabNames = root.slice();
+    renderPrefabTree();
+  }
+  // re-renders #prefabTree from the cached prefabData, applying the live filter text -- purely client-side
+  // over already-fetched data, same pattern as the Entities tab's filterBox/renderList. Folders render
+  // above root items (like a file manager). Folders with zero matches are hidden while filtering.
+  function renderPrefabTree() {
+    var tree = document.getElementById('prefabTree'); if (!tree) return;
+    var root = prefabData.root, folders = prefabData.folders;
+    if (!root.length && !folders.length) {
+      tree.innerHTML = '<div class="muted" style="padding:8px;">No prefabs yet -- select entities in the editor and use "Create from selection".</div>';
+      return;
+    }
+    var filterEl = document.getElementById('prefabFilter');
+    var filter = filterEl ? filterEl.value.toLowerCase() : '';
+    var match = function(n){ return !filter || n.toLowerCase().indexOf(filter) !== -1; };
+    var rootShown = root.filter(match);
+    var h = '';
+    var anyShown = rootShown.length > 0;
+    for (var f = 0; f < folders.length; f++) {
+      var folder = folders[f];
+      var items = (folder.items || []).filter(match);
+      if (filter && items.length === 0) continue;
+      anyShown = true;
+      h += '<div class="pf-folder pf-open" data-folder-name="' + esc(folder.name) + '">'
+         + '<div class="pf-folder-head"><span class="pf-caret">&#9662;</span> <span class="pf-fname">' + esc(folder.name) + '</span><span class="pf-folder-del" title="Delete folder">&#10005;</span></div>'
+         + '<div class="pf-folder-body">';
+      for (var j = 0; j < items.length; j++) h += '<div class="pf-item" draggable="true" data-folder="' + esc(folder.name) + '">' + esc(items[j]) + '</div>';
+      h += '</div></div>';
+    }
+    for (var i = 0; i < rootShown.length; i++) h += '<div class="pf-item" draggable="true" data-folder="">' + esc(rootShown[i]) + '</div>';
+    tree.innerHTML = anyShown ? h : '<div class="list-empty">No matches.</div>';
+  }
+
+  // prefab detail pane: real entity count + per-class tally read from the file itself. Description/tags
+  // aren't stored anywhere yet (the prefab JSON has no metadata field) -- disabled until a sidecar file lands.
+  function renderPrefabDetail(d) {
+    var card = document.getElementById('prefabCard'), empty = document.getElementById('pcEmpty');
+    if (!d.ok) { card.style.display = 'none'; empty.style.display = 'block'; empty.textContent = 'Could not read "' + d.name + '".'; return; }
+    empty.style.display = 'none'; card.style.display = 'flex';
+    document.getElementById('pcName').value = d.name;
+    var types = d.types || [];
+    var chips = '';
+    for (var i = 0; i < types.length; i++) chips += '<span class="pc-chip">' + types[i].count + ' &times; ' + esc(types[i].className) + '</span>';
+    document.getElementById('pcChips').innerHTML = chips;
+    document.getElementById('pcMeta').textContent = d.count + (d.count === 1 ? ' entity' : ' entities');
   }
 
   if (window.chrome && window.chrome.webview) {
@@ -672,16 +825,24 @@
 
   document.getElementById('refreshBtn').addEventListener('click', function(){ post({cmd:'refresh'}); });
   document.getElementById('filterBox').addEventListener('input', renderList);
+  var prefabFilterEl = document.getElementById('prefabFilter');
+  if (prefabFilterEl) prefabFilterEl.addEventListener('input', renderPrefabTree);
   document.getElementById('showHidden').addEventListener('change', renderList);
   // The two sync directions are mutually exclusive for now (both-on could freeze on multi-select).
   document.getElementById('syncEditor').addEventListener('change', function(){
-    if (this.checked) { document.getElementById('selectInEditor').checked = false; selectMode = false; }
+    if (this.checked) { document.getElementById('selectInEditor').checked = false; selectMode = false; document.getElementById('deselectBtn').style.display = 'none'; }
     post({cmd:'setSync', on: this.checked ? 1 : 0});
   });
   document.getElementById('selectInEditor').addEventListener('change', function(){
     if (this.checked) { document.getElementById('syncEditor').checked = false; post({cmd:'setSync', on:0}); }
     selectMode = this.checked;
+    document.getElementById('deselectBtn').style.display = selectMode ? 'inline-block' : 'none';
     if (selectMode) pushSelectionToEditor();
+  });
+  document.getElementById('deselectBtn').addEventListener('click', function(){
+    post({cmd:'deselect'});
+    selectedEids = {}; anchorEid = -1;
+    updateSelDom(); refreshEditorForSelection(false);   // false: we already told native directly, don't push again
   });
   document.getElementById('saveBtn').addEventListener('click', doSave);
   document.getElementById('revertBtn').addEventListener('click', doRevert);
@@ -733,6 +894,7 @@
       ['entities','prefabs','timelines'].forEach(function(name){
         document.getElementById('panel-' + name).style.display = (name === which) ? 'flex' : 'none';
       });
+      if (which === 'prefabs') post({cmd:'listPrefabs'});
     });
   });
   // timeline inner-tab switching (mockup: visual only for now)
@@ -752,7 +914,9 @@
     });
   })();
 
-  // prefabs: folder tree -- collapse, select, and drag-drop items between folders (mockup)
+  // prefabs: real folders (one level of actual subdirectories under prefabs\ -- root items have
+  // data-folder=""). Collapse/select/drag-drop all route through native file ops; the DOM here is
+  // provisional and gets replaced by the next real 'prefabs' refresh from disk.
   var prefabTree = document.getElementById('prefabTree');
   var draggingItem = null;
   if (prefabTree) {
@@ -766,6 +930,8 @@
       if (item) {
         prefabTree.querySelectorAll('.pf-item.selected').forEach(function(s){ s.classList.remove('selected'); });
         item.classList.add('selected');
+        selectedPrefabFolder = item.getAttribute('data-folder') || '';
+        post({cmd:'selectPrefab', name: item.textContent, folder: selectedPrefabFolder});
       }
     });
     prefabTree.addEventListener('dragstart', function(e){
@@ -775,19 +941,28 @@
     prefabTree.addEventListener('dragend', function(){
       if (draggingItem) draggingItem.classList.remove('dragging'); draggingItem = null;
       prefabTree.querySelectorAll('.drop-target').forEach(function(f){ f.classList.remove('drop-target'); });
+      prefabTree.classList.remove('drop-target-root');
     });
     prefabTree.addEventListener('dragover', function(e){
-      var folder = e.target.closest('.pf-folder'); if (!folder || !draggingItem) return;
+      if (!draggingItem) return;
       e.preventDefault();
       prefabTree.querySelectorAll('.drop-target').forEach(function(f){ f.classList.remove('drop-target'); });
-      folder.classList.add('drop-target');
+      var folder = e.target.closest('.pf-folder');
+      if (folder) { folder.classList.add('drop-target'); prefabTree.classList.remove('drop-target-root'); }
+      else prefabTree.classList.add('drop-target-root');
     });
     prefabTree.addEventListener('drop', function(e){
-      var folder = e.target.closest('.pf-folder'); if (!folder || !draggingItem) return;
+      if (!draggingItem) return;
       e.preventDefault();
-      folder.classList.add('pf-open');
-      folder.querySelector('.pf-folder-body').appendChild(draggingItem);
-      folder.classList.remove('drop-target');
+      var fromFolder = draggingItem.getAttribute('data-folder') || '';
+      var name = draggingItem.textContent;
+      var folder = e.target.closest('.pf-folder');
+      var toFolder = folder ? (folder.getAttribute('data-folder-name') || '') : '';
+      prefabTree.querySelectorAll('.drop-target').forEach(function(f){ f.classList.remove('drop-target'); });
+      prefabTree.classList.remove('drop-target-root');
+      if (toFolder === fromFolder) return;   // dropped where it already lives
+      if (allPrefabNamesInFolder(toFolder).indexOf(name) !== -1) { toast('A prefab named "' + name + '" already exists there', 'warn'); return; }
+      post({cmd:'movePrefabToFolder', name: name, fromFolder: fromFolder, toFolder: toFolder});
     });
   }
   var newFolderBtn = document.getElementById('newFolderBtn');
@@ -797,32 +972,27 @@
     f.innerHTML = '<div class="pf-folder-head"><span class="pf-caret">▾</span> <input class="pf-folder-name" value="New Folder"><span class="pf-folder-del" title="Delete folder">✕</span></div><div class="pf-folder-body"></div>';
     prefabTree.appendChild(f);
     var inp = f.querySelector('.pf-folder-name');
-    function commit(){ var nm = inp.value || 'New Folder'; inp.parentNode.innerHTML = '<span class="pf-caret">▾</span> <span class="pf-fname">' + nm.replace(/</g,'&lt;') + '</span><span class="pf-folder-del" title="Delete folder">✕</span>'; }
-    inp.addEventListener('keydown', function(e){ if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+    var done = false;
+    function commit(){
+      if (done) return; done = true;
+      var nm = (inp.value || '').trim();
+      f.remove();   // provisional node; the real folder (or nothing, on failure) arrives on the next refresh
+      if (!nm) return;
+      var exists = false;
+      for (var i = 0; i < prefabData.folders.length; i++) if (prefabData.folders[i].name === nm) exists = true;
+      if (exists) { toast('A folder named "' + nm + '" already exists', 'warn'); return; }
+      post({cmd:'createFolder', name: nm});
+    }
+    inp.addEventListener('keydown', function(e){ if (e.key === 'Enter') { e.preventDefault(); commit(); } else if (e.key === 'Escape') { done = true; f.remove(); } });
     inp.addEventListener('blur', commit);
     inp.focus(); inp.select();
   });
-  function findOrCreateUncategorized(){
-    if (!prefabTree) return null;
-    var heads = prefabTree.querySelectorAll('.pf-folder-head');
-    for (var i=0;i<heads.length;i++){ if (heads[i].textContent.indexOf('Uncategorized') !== -1) return heads[i].parentNode; }
-    var f = document.createElement('div'); f.className = 'pf-folder pf-open';
-    f.innerHTML = '<div class="pf-folder-head"><span class="pf-caret">▾</span> <span class="pf-fname">Uncategorized</span><span class="pf-folder-del" title="Delete folder">✕</span></div><div class="pf-folder-body"></div>';
-    prefabTree.appendChild(f); return f;
-  }
   function deleteFolder(folder){
     if (!folder) return;
-    var items = folder.querySelectorAll('.pf-item');
-    if (items.length === 0) { folder.remove(); if (typeof toast==='function') toast('Folder deleted','ok'); return; }
-    showConfirm('Move ' + items.length + ' prefab(s) to Uncategorized and delete this folder?', function(){
-      var unc = findOrCreateUncategorized();
-      if (!unc || unc === folder) return;   // can't fold Uncategorized into itself
-      var body = unc.querySelector('.pf-folder-body');
-      var its = folder.querySelectorAll('.pf-item');
-      for (var i=0;i<its.length;i++) body.appendChild(its[i]);
-      folder.remove();
-      if (typeof toast==='function') toast('Folder deleted; ' + its.length + ' prefab(s) moved to Uncategorized','ok');
-    });
+    var name = folder.getAttribute('data-folder-name') || '';
+    var count = folder.querySelectorAll('.pf-item').length;
+    var msg = count ? ('Move ' + count + ' prefab(s) to the root list and delete this folder?') : 'Delete this empty folder?';
+    showConfirm(msg, function(){ post({cmd:'deleteFolder', name: name}); });
   }
   // reusable confirm modal
   var confirmModal = document.getElementById('confirmModal');
@@ -836,15 +1006,26 @@
     document.getElementById('confirmCancel').addEventListener('click', function(){ confirmModal.style.display='none'; confirmCb=null; });
     document.getElementById('confirmOk').addEventListener('click', function(){ confirmModal.style.display='none'; var cb=confirmCb; confirmCb=null; if (cb) cb(); });
   }
-  // inline prefab rename (no native prompt)
+  // inline prefab rename -> native MoveFileA. Commits only on a real change; refuses a collision with an
+  // existing name (MoveFileA would fail anyway, but pre-checking gives a clearer message). The list is
+  // re-fetched from disk on success, so the DOM text here is provisional.
   function renamePrefabItem(item){
     var old = item.textContent;
+    var folder = item.getAttribute('data-folder') || '';
     item.setAttribute('draggable','false');
     item.innerHTML = '<input class="pf-item-name" value="">';
     var inp = item.querySelector('.pf-item-name'); inp.value = old;
-    function finish(txt){ item.textContent = txt; item.setAttribute('draggable','true'); }
-    inp.addEventListener('keydown', function(e){ if (e.key==='Enter'){ e.preventDefault(); finish(inp.value||old); } else if (e.key==='Escape'){ finish(old); } });
-    inp.addEventListener('blur', function(){ finish(inp.value||old); });
+    var done = false;
+    function finish(commit){
+      if (done) return; done = true;
+      var txt = (inp.value || '').trim();
+      item.textContent = old; item.setAttribute('draggable','true');   // revert DOM; disk is the source of truth
+      if (!commit || !txt || txt === old) return;
+      if (allPrefabNamesInFolder(folder).indexOf(txt) !== -1) { toast('A prefab named "' + txt + '" already exists', 'warn'); return; }
+      post({cmd:'renamePrefab', oldName: old, newName: txt, folder: folder});
+    }
+    inp.addEventListener('keydown', function(e){ if (e.key==='Enter'){ e.preventDefault(); finish(true); } else if (e.key==='Escape'){ finish(false); } });
+    inp.addEventListener('blur', function(){ finish(true); });
     inp.focus(); inp.select();
   }
   function renameFolder(folder){
@@ -852,26 +1033,37 @@
     var name = lbl.textContent;
     lbl.innerHTML = '<input class="pf-folder-name" value="">';
     var inp = lbl.querySelector('.pf-folder-name'); inp.value = name;
-    function finish(nm){ lbl.textContent = nm || name; }
-    inp.addEventListener('keydown', function(e){ if (e.key==='Enter'){ e.preventDefault(); finish(inp.value); } else if (e.key==='Escape'){ finish(name); } });
-    inp.addEventListener('blur', function(){ finish(inp.value); });
+    var done = false;
+    function finish(commit){
+      if (done) return; done = true;
+      var txt = (inp.value || '').trim();
+      lbl.textContent = name;   // revert DOM; disk refresh is the source of truth
+      if (!commit || !txt || txt === name) return;
+      var exists = false;
+      for (var i = 0; i < prefabData.folders.length; i++) if (prefabData.folders[i].name === txt) exists = true;
+      if (exists) { toast('A folder named "' + txt + '" already exists', 'warn'); return; }
+      post({cmd:'renameFolder', oldName: name, newName: txt});
+    }
+    inp.addEventListener('keydown', function(e){ if (e.key==='Enter'){ e.preventDefault(); finish(true); } else if (e.key==='Escape'){ finish(false); } });
+    inp.addEventListener('blur', function(){ finish(true); });
     inp.focus(); inp.select();
   }
-  // card actions (mockup)
+  // card actions. Load/Place is deferred (needs a backend fix -- the engine paste path crashes, same root
+  // cause as Create); Delete is a real file op.
+  var selectedPrefabFolder = '';
   var prefabLoadBtn = document.getElementById('prefabLoadBtn');
   if (prefabLoadBtn) prefabLoadBtn.addEventListener('click', function(){
-    if (typeof toast==='function') toast('Loaded "' + (document.getElementById('pcName').value || 'prefab') + '" — click in the editor to place', 'ok');
+    toast('Load / Place is coming soon (needs a backend fix)', 'warn');
   });
   var prefabDeleteBtn = document.getElementById('prefabDeleteBtn');
   if (prefabDeleteBtn) prefabDeleteBtn.addEventListener('click', function(){
-    var name = document.getElementById('pcName').value || 'prefab';
-    showConfirm('Delete "' + name + '"?', function(){
-      var sel = prefabTree ? prefabTree.querySelector('.pf-item.selected') : null; if (sel) sel.remove();
-      if (typeof toast==='function') toast('Deleted "' + name + '"', 'ok');
-    });
+    var name = document.getElementById('pcName').value; if (!name) return;
+    showConfirm('Delete "' + name + '"? This removes the file from disk.', function(){ post({cmd:'deletePrefab', name: name, folder: selectedPrefabFolder}); });
   });
-  // selection-aware Create button (mockup: editorSelCount would come from get_selection in DOOM)
-  var editorSelCount = 5;
+  // selection-aware Create button: editorSelCount is kept live via the native "selCount" broadcast
+  // (get_selection, polled every ~330ms independent of the sync checkboxes). PREVIEW has no live editor,
+  // so it starts with a nonzero demo value to keep the button clickable while poking around.
+  var editorSelCount = PREVIEW ? 5 : 0;
   function updateCreateBtn(){
     var b = document.getElementById('prefabCreateBtn'); if (!b) return;
     if (editorSelCount > 0){ b.disabled = false; b.textContent = 'Create from selection (' + editorSelCount + ')'; b.removeAttribute('title'); }
@@ -896,12 +1088,14 @@
     e.preventDefault();
     prefabTree.querySelectorAll('.pf-item.selected').forEach(function(s){ s.classList.remove('selected'); });
     item.classList.add('selected');
+    var nm = item.textContent;
+    var folder = item.getAttribute('data-folder') || '';
+    selectedPrefabFolder = folder;
+    post({cmd:'selectPrefab', name: nm, folder: folder});
     ctx.innerHTML = '';
-    addCtx('Load / Place', function(){ if (typeof toast==='function') toast('Loaded "' + item.textContent + '" — click to place', 'ok'); });
+    addCtx('Load / Place', function(){ toast('Load / Place is coming soon (needs a backend fix)', 'warn'); });
     addCtx('Rename', function(){ renamePrefabItem(item); });
-    addCtx('Move to Uncategorized', function(){ var unc = findOrCreateUncategorized(); if (unc) unc.querySelector('.pf-folder-body').appendChild(item); });
-    addCtx('Open in Explorer', function(){ if (typeof toast==='function') toast('Opening prefabs folder...', 'ok'); });
-    addCtx('Delete', function(){ item.remove(); if (typeof toast==='function') toast('Deleted', 'ok'); });
+    addCtx('Delete', function(){ showConfirm('Delete "' + nm + '"? This removes the file from disk.', function(){ post({cmd:'deletePrefab', name: nm, folder: folder}); }); });
     ctx.style.left = e.pageX + 'px'; ctx.style.top = e.pageY + 'px'; ctx.style.display = 'block';
   });
 
@@ -911,24 +1105,26 @@
   // create-from-selection prompt (mockup)
   var pcModal = document.getElementById('prefabCreateModal');
   function showPrefabModal(s){ if (pcModal) pcModal.style.display = s ? 'flex' : 'none'; }
+  // Create from selection is deferred: the engine serialize path (serialize_selection +0xb0) hard-crashes
+  // DOOM on this build (backend prefab machinery never validated). Keep the live selection count for
+  // feedback, but the button reports the status instead of opening the modal until the backend is fixed.
   var pcCreateBtn = document.getElementById('prefabCreateBtn');
-  if (pcCreateBtn) pcCreateBtn.addEventListener('click', function(){ showPrefabModal(true); document.getElementById('npName').focus(); });
+  if (pcCreateBtn) pcCreateBtn.addEventListener('click', function(){
+    toast('Create from selection is coming soon (needs a backend fix)', 'warn');
+  });
   var npCancel = document.getElementById('npCancel');
   if (npCancel) npCancel.addEventListener('click', function(){ showPrefabModal(false); });
   var npCreate = document.getElementById('npCreate');
   if (npCreate) npCreate.addEventListener('click', function(){
-    var name = document.getElementById('npName').value || 'New Prefab';
-    var bodies = prefabTree ? prefabTree.querySelectorAll('.pf-folder-body') : [];
-    var target = bodies.length ? bodies[bodies.length - 1] : null;   // drop into the last folder (Uncategorized)
-    if (target) {
-      var item = document.createElement('div');
-      item.className = 'pf-item'; item.setAttribute('draggable', 'true'); item.textContent = name;
-      target.appendChild(item);
-      target.parentNode.classList.add('pf-open');
+    var name = (document.getElementById('npName').value || '').trim();
+    if (!name) { if (typeof toast === 'function') toast('Enter a name', 'warn'); return; }
+    function doCreate(){
+      post({cmd:'createPrefab', name: name});
+      showPrefabModal(false);
+      document.getElementById('npName').value=''; document.getElementById('npDesc').value=''; document.getElementById('npTags').value='';
     }
-    showPrefabModal(false);
-    document.getElementById('npName').value=''; document.getElementById('npDesc').value=''; document.getElementById('npTags').value='';
-    if (typeof toast === 'function') toast('Created "' + name + '"', 'ok');
+    if (currentPrefabNames.indexOf(name) !== -1) showConfirm('A prefab named "' + name + '" already exists. Overwrite?', doCreate);
+    else doCreate();
   });
 
   post({cmd:'refresh'});

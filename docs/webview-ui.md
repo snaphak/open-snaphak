@@ -61,6 +61,11 @@ The frontend holds no engine addresses; it calls the backend only through the vt
 | Class / Inherit autocomplete | `enum_valid_classes` +0x270, `enum_inherits` +0x278 |
 | Camera Origin (X/Y/Z + Lock Position) | `get_editor_vec3` +0x08, `set_editor_vec3` +0x00 |
 | Installed version readout | reads `%LOCALAPPDATA%\open-snaphak\install.json` (written by the installer) |
+| Deselect (explicit button, "Select in 3D editor" mode) | `clear_selection` +0x148 |
+| Live "Create from selection (N)" button count | `get_selection` +0x150, polled every ~330 ms independent of the sync checkboxes |
+| Prefabs list, detail pane, delete/rename, folders (create/rename/delete/move) | `resolve_prefab_path` +0xc0 only -- pure Win32 file/directory ops (`FindFirstFileA`, `DeleteFileA`, `MoveFileA`, `CreateDirectoryA`, `RemoveDirectoryA`) on the resolved path. No other engine slot involved, so none of this can hit the +0xb0 crash below. |
+| Create from selection -- **BLOCKED, see Known limitations** | `serialize_selection` +0xb0 (hard-crashes DOOM on this build) |
+| Load / Place -- **deferred, see Known limitations** | would need `apply_edit` kind=2 (stage + `PasteInstantiate` + enter grab mode), blocked on the same crash |
 
 Heavy engine writes (Save, Delete, Select-in-editor) are snapshotted in the JS message callback and
 applied on the next think-loop frame under the loop mutex -- mirroring the Qt frontend's flag-word
@@ -89,11 +94,47 @@ dispatch, which keeps them off the re-entrant callback and on the main-thread ex
 - Installed-version + connection status in the status bar.
 - Browser preview mode: `mockup.html` self-populates with sample data and is fully interactive when
   opened without a WebView2 host (for fast UI iteration); inert in DOOM.
+- Default window size bumped to 1440x900 (from 1040x720) so the Entities and Prefabs tabs fit without a
+  manual resize on first launch.
+- Explicit **Deselect** button next to "Select in 3D editor" (only visible while that mode is on): calls
+  `clear_selection` directly. A native click on empty space in the 3D view doesn't clear a selection that
+  was set via `add_to_selection` (confirmed: a purely native selection deselects fine on its own -- only
+  our externally-driven selection gets stuck), and the root cause is unRE'd in this codebase, so this is a
+  reliable escape hatch rather than a fix for the underlying click behavior.
+- **Prefabs tab, wired to the real filesystem** (`%USERPROFILE%\snaphak\prefabs\`) -- no fake/mockup data:
+  - Live list of real `.json` prefab files, refreshed from disk on every Prefabs-tab click; an empty-state
+    message when there are none yet.
+  - Detail pane on selecting a prefab: real entity count and a per-`className` tally, read directly from
+    the file (a targeted "find key -> read quoted value" scan, not a full JSON parser -- same approach as
+    the JS<->native command parsing). Description/Tags fields are visibly disabled ("a later step"): the
+    prefab JSON has no metadata field, so there's nothing to show until a sidecar file is designed.
+  - Delete and Rename are real file operations (`DeleteFileA` / `MoveFileA`), each with a collision/confirm
+    guard client-side and a safe no-overwrite guarantee native-side.
+  - **Folders**: one real level of subdirectories under `prefabs\` (no nested-within-nested) -- the
+    directory *is* the source of truth, no separate manifest file to desync. New Folder button, drag-and-
+    drop a prefab between folders/root, folder Rename, and folder Delete (moves any remaining contents back
+    to the root list, then removes the now-empty directory). Folders render above root-level items.
+  - Filter/search box narrows the list client-side over the last real fetch (same pattern as the Entities
+    tab's filter); folders with zero matches are hidden while filtering, with a "No matches." empty state.
+  - "Create from selection" and "Load / Place" are visible but intentionally neutered to a "coming soon"
+    toast -- see Known limitations for why.
 
 ## Known limitations / TODO
 
-- **Prefabs** and **Timelines / Timeline Editor** tabs are not ported (the Qt frontend has them). The heavy
-  serialize/apply slots the Prefabs tab needs are not bound in the current backend build.
+- **Create from selection / Load-Place are BLOCKED on a backend crash, not a frontend gap.**
+  `serialize_selection` (+0xb0) hard-crashes DOOM -- confirmed via `webview_poc.log`: the last durable log
+  line is immediately before the +0xb0 call, and neither the fault-shield VEH nor the frontend's own SEH
+  guard catches anything, meaning it's a stack/heap fault inside the engine's prefab ctor/populate/
+  serialize/render chain, not a clean access violation. The Qt Prefabs tab was always a "Coming soon" stub
+  (see `sh_tabs.cpp`), so this backend path has *never* been exercised by either frontend -- this webview
+  attempt was the first real call. The frontend code for both features is written and correct (native
+  `poc_apply_create_prefab` with step-by-step logging, the JS create modal + overwrite guard, the planned
+  `PasteInstantiate` + grab-mode flow for Load/Place mirroring the working Timeline-spawn precedent) but
+  both buttons are neutered to a safe "coming soon" toast until the backend's prefab RVAs are fixed/
+  re-derived (expected as part of the mentioned backend rewrite). Delete/Rename/Folders are unaffected --
+  they're pure Win32 file ops through `resolve_prefab_path` (+0xc0) only, no `serialize_selection` involved.
+- **Timelines / Timeline Editor** tab is not ported (the Qt frontend has it, and per `sh_timeline.cpp` even
+  the OG Qt behavior has a faithfully-reproduced "Create New Timeline" brokenness). Deferred.
 - **Push to stack 0** is a stub: the SnapStack subsystem (`snapstack.cpp`) is Qt-bound and its consuming
   ops are not ported to this frontend.
 - Editing an entity's decl does not re-present it live in the editor (a decl commit updates the definition
