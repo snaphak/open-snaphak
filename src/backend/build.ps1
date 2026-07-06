@@ -46,7 +46,7 @@
 # Needs Build Tools for Visual Studio 2022 (C++ workload).
 param(
     [string[]]$Sources = @("dllmain.c", "signatures.c", "hook.c", "smoke.c",
-                           "rawmap.c", "strids.c",
+                           "rawmap.c", "palette_guard.c", "strids.c",
                            "overrides.c", "cvars.c", "commands.c", "clipboard.c",
                            "entity.c", "typeinfo.c", "patch.c", "algo.c", "target_any.c", "wiring_cleandirect.c", "ui_bridge.c",
                            "iface_engine.c", "apply_engine.c", "../common/snaphak_iface.c",

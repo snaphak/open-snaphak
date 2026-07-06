@@ -37,4 +37,8 @@ int sh_iface_engine_install(const sig_result *results, size_t n, const uint8_t *
  * Fail-open on uncertainty. Allows ANY valid class+inherit morph; rejects only crash-inducing combos. */
 int sh_iface_class_inherit_ok(int id, const char *newClass, const char *newInherit);
 
+/* Resolve an entity id -> its full module-qualified id-string (the targets-field ref form). A global entity
+ * yields the "... (no module)" form (no resolvable ref -- the caller rejects it). SEH-guarded. */
+const char *ie_resolve_id_string(int id, char *buf, int cap);
+
 #endif /* B2_IFACE_ENGINE_H */

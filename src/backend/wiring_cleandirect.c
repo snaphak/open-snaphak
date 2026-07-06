@@ -32,6 +32,7 @@
 #include "signatures.h"
 #include "patch.h"          /* sh_install_detour_sig / sh_uninstall_detour */
 #include "backend_log.h"
+#include "apply_engine.h"   /* ae_schedule_target_write -- the Fix B targets-write for a bare timeline target */
 
 #define SIG_CREATOR_BASE     "ConnectOutputCreator"   /* 0xcdbb40 -- base-entity-source connect creator */
 #define SIG_CREATOR_OUTNODE  "WireConnectCreator1"    /* 0xcdb990 -- output-node-source connect creator */
@@ -44,6 +45,8 @@
 #define DECL_FLAGS_OFF       0x3cd     /* decl -> the editor-flags byte */
 #define DECL_ISINPUT_BIT     0x10      /* decl+0x3cd bit 0x10 = is-input-node (the clean-direct gate) */
 #define DECL_ISOUTPUT_BIT    0x20      /* decl+0x3cd bit 0x20 = is-output-node (leave those untouched) */
+#define WCD_TOOL_SOURCE_OFF  0x08      /* connect-tool + 8 -> the wire SOURCE entity id (the pick anchor). BUILD-
+                                        * SPECIFIC -- RE-DERIVE per build (decompile cdbb40/cd9830's tool reads). */
 
 typedef void (*creator_fn)(void *tool, void *world, int idx);
 
@@ -58,6 +61,13 @@ static creator_fn     g_orig_outnode   = NULL;   /* trampoline to stock cdb990 *
  * polls this (via the iface +0x288 slot) alongside entity_count and forces a list rebuild when it changes --
  * so the labels auto-settle. Read-only from the UI; the backend only ever increments it. */
 static volatile LONG  g_connect_generation = 0;
+
+/* Fix B debounce: the last {source,target} written as a targets-trigger. The connect creators fire per
+ * hover-FRAME, so a bare-target pick is written ONCE per distinct pair (reset when the hover leaves a bare
+ * target). Backend-side the write is ALSO idempotent (ae_apply_target_write skips a ref already present), so a
+ * re-hover cannot duplicate. Single-threaded (editor tick). */
+static int            g_last_write_source = -1;
+static int            g_last_write_target = -1;
 
 int sh_wiring_cleandirect_generation(void)
 {
@@ -92,37 +102,42 @@ static void wcd_run(creator_fn stock, void *tool, void *world, int idx)
         return;
     }
 
+    /* Classify the hovered target from its decl-flags byte (decl+0x3cd): an OUTPUT node (0x20) or an INPUT node
+     * (0x10) is CSR-wireable, so the STOCK creator handles it (a normal wire). A BARE is-target (neither) is the
+     * timeline case -- the CSR resolver cannot route a wire to it, so the stock clean-direct would lay a DANGLING
+     * CSR edge (the observed re-entry hard crash + per-frame draw fault). For a bare target we SUPPRESS the
+     * creator and instead write the source's state.edit.targets (Fix B -- the engine's native `activate` trigger,
+     * the form every working ground-truth map uses). */
     uint8_t *flagp = (idx >= 0) ? wcd_target_flags(world, idx) : NULL;
-    uint8_t  old   = 0;
-    int      forced = 0;
-
+    int bare = 0;
     if (flagp) {
         __try {
-            old = *flagp;
-            if ((old & DECL_ISOUTPUT_BIT) == 0 && (old & DECL_ISINPUT_BIT) == 0) {
-                *flagp = (uint8_t)(old | DECL_ISINPUT_BIT);   /* -> the stock clean-direct branch */
-                forced = 1;
-            }
-        } __except (EXCEPTION_EXECUTE_HANDLER) { forced = 0; }
+            uint8_t f = *flagp;
+            if ((f & DECL_ISOUTPUT_BIT) == 0 && (f & DECL_ISINPUT_BIT) == 0) bare = 1;
+        } __except (EXCEPTION_EXECUTE_HANDLER) { bare = 0; }
     }
 
-    /* Run the stock creator with the transient input-node bit set, restoring it in a __finally so the bit is
-     * reverted even if the creator exits non-locally. A mid-pick toggle can leave the wire tool in a state
-     * where the stock creator throws; a plain post-call restore would then be SKIPPED, leaking the input-node
-     * bit onto a GLOBAL, shared decl. Because re-hide masks with &0x3F it cannot clear a leaked 0x10, so the
-     * stray bit would survive every in-editor map re-entry (mis-flagging the decl an input-node -> the reload
-     * reconcile rejects it) until the decls are reloaded fresh. __finally runs during the unwind, so the bit
-     * is always put back. */
-    __try {
-        stock(tool, world, idx);                      /* the STOCK creator does all the work */
-    } __finally {
-        if (forced) { __try { *flagp = old; } __except (EXCEPTION_EXECUTE_HANDLER) {} }
+    if (bare && idx >= 0) {
+        /* Fix B: bare target -> SUPPRESS (do NOT run the stock creator; it would lay the dangling CSR edge) and
+         * write the source's targets ONCE per distinct pick (the creator fires per hover-frame -> debounce, and
+         * the write is idempotent backend-side). SOURCE = the connect-tool anchor (tool+0x08). */
+        int source = -1;
+        __try { source = *(const int *)((const uint8_t *)tool + WCD_TOOL_SOURCE_OFF); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { source = -1; }
+        if (source >= 0 && (source != g_last_write_source || idx != g_last_write_target)) {
+            g_last_write_source = source;
+            g_last_write_target = idx;
+            ae_schedule_target_write(source, idx);        /* main-thread: serialize source -> splice targets -> apply */
+            InterlockedIncrement(&g_connect_generation);  /* nudge the Studio list to re-scan labels */
+        }
+        return;   /* stock NOT run -> no node, no CSR edge, no dangling wire */
     }
 
-    /* Signal the UI that a wire-any connect edit occurred (idx >= 0 = a real target pick). The Studio think-
-     * loop reads sh_wiring_cleandirect_generation() (iface +0x288) alongside entity_count and rebuilds the
-     * entity list when it changes -- so the chain's module-name labels re-read + settle after a wire (which
-     * nets no entity-count change), with no manual refresh. Bumped per pick; the UI debounces/windows it. */
+    /* A real output/input-node target (or an off-target frame): normal wire via the stock creator. Reset the
+     * debounce so the next bare pick writes. */
+    g_last_write_source = -1;
+    g_last_write_target = -1;
+    stock(tool, world, idx);
     if (idx >= 0) InterlockedIncrement(&g_connect_generation);
 }
 

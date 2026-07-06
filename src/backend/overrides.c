@@ -19,6 +19,7 @@
 #pragma comment(lib, "shell32.lib")   /* SHGetFolderPathA */
 #include "overrides.h"
 #include "backend_log.h"
+#include "overrides_seed_baked.h"   /* the built-in "*Custom"-tab default decls (Timeline + Unknown) */
 
 /* The engine open-by-name vtable method offset within the resource-provider vtable.
  * DIRECT: OG patches engineBase+0x2798598; the vtable is engineBase+0x27984a0 -> slot offset = 0xf8. */
@@ -343,6 +344,36 @@ static void *decode_vtable_global(const uint8_t *ctor_fn)
     return NULL;
 }
 
+/* ====================================================== built-in default-decl self-seed =============
+ * Ship the clone's "*Custom" palette-tab default set (the Timeline + Unknown editor-entity/entityDef
+ * overrides, g_ov_seed_decls) built-in: on install, write each to <root>\overrides\<name> IF ABSENT, so a
+ * clean setup gets the tab + entities with no external files. WRITE-IF-ABSENT -> a user's own file at the
+ * same path is never clobbered, and the open-shadow above then serves whichever is on disk. Runs before the
+ * engine's decl preload (the hook is installed first), so a freshly-seeded decl is picked up this boot.
+ * SEH-guarded; a seed failure just degrades to "no built-in default for that name", never a crash. */
+static void seed_baked_overrides(void)
+{
+    for (size_t i = 0; i < sizeof g_ov_seed_decls / sizeof g_ov_seed_decls[0]; i++) {
+        char path[MAX_PATH];
+        if (!build_override_path(g_ov_seed_decls[i].name, path, sizeof path)) continue;
+        if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) continue;   /* present -> keep the user's */
+        __try {
+            char dir[MAX_PATH];
+            strncpy_s(dir, sizeof dir, path, _TRUNCATE);
+            char *slash = strrchr(dir, '\\');
+            if (slash) { *slash = '\0'; SHCreateDirectoryExA(NULL, dir, NULL); }
+            FILE *fp = NULL;
+            if (fopen_s(&fp, path, "wb") == 0 && fp) {
+                fwrite(g_ov_seed_decls[i].text, 1, g_ov_seed_decls[i].len, fp);
+                fclose(fp);
+                char msg[MAX_PATH + 64];
+                _snprintf_s(msg, sizeof msg, _TRUNCATE, "B1: seeded built-in override '%s'", g_ov_seed_decls[i].name);
+                backend_log(msg);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { /* skip this one */ }
+    }
+}
+
 /* ============================================================ the install (slot swap) ==============*/
 
 int sh_overrides_install(void *ctor_fn, int ctor_status_ok)
@@ -394,6 +425,7 @@ int sh_overrides_install(void *ctor_fn, int ctor_status_ok)
     g_slot = slot;
 
     if (!g_root[0]) default_root(g_root, sizeof g_root);
+    seed_baked_overrides();   /* materialize the built-in "*Custom"-tab default decls if absent (Timeline + Unknown) */
     _snprintf_s(line, sizeof line, _TRUNCATE,
         "B1: overrides file-shadow installed (vtable=%p slot+0x%x=%p, orig open=%p); root=%s\\overrides",
         vtable, OPEN_SLOT_OFFSET, (void *)slot, orig, g_root);

@@ -90,11 +90,13 @@
  *          the componentTimeLine back in -> SCHEDULE via iface +0xd0 (the main-thread clone_bss_apply) onto
  *          entity_id. So a timeline commit IS a decl-safe bss-style apply on the timeline entity.
  *
- * CREATE-NEW-TIMELINE (clone EXCEEDS OG): in OG the "Create New Timeline" button is UNWIRED -- it has no slot
- * (no connectImpl, no on_*_clicked auto-slot; create-timeline-re DIRECT), so clicking it does nothing and a new
- * timeline could only be reached by selecting an already-placed idTarget_Timeline. The clone IMPLEMENTS it as a
- * real feature (sh_timeline_create_new below): gated on EntityMode (tabbed inside a module), it either MORPHS the
- * selected entity into a timeline host or SPAWNS a fresh one grabbed at the camera. The engine canonicalizes
+ * TIMELINE CREATION is NOT done in this file (or anywhere clone-side). Two clone-side create paths were tried
+ * and both corrupted the map: a from-scratch SPAWN (paste an idTarget_Command carrier, then reclass it) left a
+ * stale output render node -> the exit-Play "map logic error" + crash; and a MORPH (reclass an already-placed
+ * selected entity to idTarget_Timeline) broke the game the same way. The clone cannot fabricate a timeline entity
+ * outside the engine's own creation path. Instead a timeline is PLACED from the in-game SnapMap entity palette (a
+ * built-in decl override makes it selectable there), so the engine builds a correct, validated entity by
+ * construction; this file only AUTHORS events on that already-placed timeline. The engine canonicalizes
  * componentTimeline -> componentTimeLine (we always emit the L-form).
  */
 #include "sh_timeline.h"
@@ -109,11 +111,6 @@
 #include "sh_event_docs.h"      /* GENERATED data table: OUR
                                  * author-facing descriptions for the 1611 events (the engine ships none). Feeds the
                                  * EXPLAIN description box -- the rich "what this event does" + per-arg prose. */
-#include "mkcmd_template.inc"   /* SH_MKCMD_PREFAB_TEMPLATE: the BYTE-EXACT, engine-accepted idSnapEntityPrefab
-                                 * (also used by snapstack.cpp::h_mkcmd). The Create-New-Timeline SPAWN builds from
-                                 * THIS (substituting className/displayName/edit-body) so its float leaves + customIcon
-                                 * are engine-correct by construction -- a Qt-rebuilt prefab dropped the float ".0"
-                                 * ("...grabAxis.mat[0].z is not a floating point") + omitted customIcon. */
 
 #include <string>
 #include <vector>
@@ -205,24 +202,27 @@ static void tl_iface_toast(sh_iface *iface, const char *title, const char *text)
 {
     if (iface && iface->vtbl && iface->vtbl->toast) iface->vtbl->toast(iface, title, text);
 }
-/* +0x1c0 is the player TABBED INSIDE a module (EntityMode, editor+0x23618==2)? The Create-New-Timeline gate +
- * the Qt button gray-out. A missing binding (partial backend) -> false (button stays disabled), never a crash. */
-static bool tl_iface_is_entity_mode(sh_iface *iface)
+
+/* PORTABLE-INHERIT NORMALIZE (create-timeline via the in-game palette). A palette-placed Timeline is spawned
+ * from our repurposed `snapmaps/editor_only/placeholder_target` entityDef, so the entity records THAT as its
+ * `inherit` -> the saved map only reloads where our override is installed. Rewrite the inherit to
+ * `snapmaps/unknown` (the universal SnapMap base a morph-made timeline carried) so the map is portable. The
+ * `className` STAYS `idTarget_Timeline` (NO reclass -> no node-cap change, no render-node re-bucket -- none of
+ * the create-crash surface); the edit rides the same main-thread bss apply (backend ae_apply_one) the
+ * Timeline-Editor commit uses, and the backend's class/inherit compat gate makes a bad pair a safe no-op. A RAW
+ * string splice on the serialized JSON (NOT a QJson re-serialize, which would drop the engine-required float
+ * ".0"). Idempotent one-shot: after the rewrite the inherit is snapmaps/unknown and never re-matches. */
+bool sh_timeline_normalize_inherit(sh_iface *iface, int id)
 {
-    if (!iface || !iface->vtbl || !iface->vtbl->is_entity_mode) return false;
-    return iface->vtbl->is_entity_mode(iface) != 0;
-}
-/* +0x268 ATOMIC class+inherit morph (one FINAL-pair check then both fields, guard-bypassed at the invalid
- * intermediate). Returns 1 applied / 0 rejected (the FINAL pair is incompatible) / -1 slot absent. The Create-
- * New-Timeline MORPH needs THIS (not the plain bss-apply) -- the bss alone changes className but NOT the engine
- * inherit field, so the snapmaps/unknown-forced model-strip never lands + later timeline commits get REJECTED. */
-static int tl_iface_apply_class_inherit(sh_iface *iface, int id, const char *cls, const char *inh)
-{
-    if (!iface || !iface->vtbl || !iface->vtbl->apply_class_inherit) return -1;
-    /* Defense-in-depth: NEVER morph a stale/deleted id -- the engine's class-derive compat check dereferences
-     * the entity's className idStr, and a freed slot's dangling ptr faults (the delete-then-create crash). */
-    if (!tl_iface_is_valid(iface, id)) return -1;
-    return iface->vtbl->apply_class_inherit(iface, id, cls, inh);
+    static const char PLACEHOLDER[] = "snapmaps/editor_only/placeholder_target";
+    if (!iface || id < 0) return false;
+    std::string full = tl_iface_serialize_entity(iface, id);
+    if (full.empty() || full.find(PLACEHOLDER) == std::string::npos) return false;
+    std::string patched = full;
+    for (size_t p = 0; (p = patched.find(PLACEHOLDER, p)) != std::string::npos; )
+        patched.replace(p, sizeof(PLACEHOLDER) - 1, "snapmaps/unknown"),
+            p += sizeof("snapmaps/unknown") - 1;
+    return tl_iface_schedule_apply(iface, id, patched, "tl-inherit-portable");
 }
 
 /* +0x110 ENUMERATE the valid decl names of a resource class (the constrained decl-combobox). The backend
@@ -1469,212 +1469,6 @@ void sh_timeline_insert_event(ShWinController *win)
     if (tab) tl_connect_dirty(ed, tab->page);
 }
 
-/* ================================================================ Create-New-Timeline (EXCEEDS OG) ===
- * The empty componentTimeLine a fresh timeline host carries (entityEvents with a zero count). The on-disk
- * count lives in entityEvents (NO top-level num -- see the header THE ON-DISK SHAPE). */
-static QJsonObject tl_empty_component()
-{
-    QJsonObject entityEvents; entityEvents.insert("num", 0);
-    QJsonObject comp;         comp.insert("entityEvents", entityEvents);
-    return comp;
-}
-
-/* MORPH an existing entity into a timeline host: take its serialized JSON and set, in state.edit,
- * className="idTarget_Timeline", inherit="snapmaps/unknown", an empty componentTimeLine, and STRIP the render
- * model (renderModelInfo.model="") so it draws as the generic unknown (FACET 4 -- snapmaps/unknown imposes no
- * model; create-timeline-re). The exact morph the OG commit-builder FUN_180012458 performs, plus the model-strip.
- * Returns the patched JSON (empty on parse failure). */
-static std::string tl_build_timeline_host_json(const std::string &full_json)
-{
-    QJsonParseError pe;
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(full_json.data(), (int)full_json.size()), &pe);
-    if (pe.error != QJsonParseError::NoError || !doc.isObject()) return std::string();
-    QJsonObject root = doc.object();
-    if (!root.contains("entityDef") || !root.value("entityDef").isObject()) return std::string();
-    QJsonObject ed   = root.value("entityDef").toObject();
-    QJsonObject st   = ed.value("state").isObject() ? ed.value("state").toObject() : QJsonObject();
-    QJsonObject edit = st.value("edit").isObject() ? st.value("edit").toObject() : QJsonObject();
-
-    edit.insert("componentTimeLine", tl_empty_component());
-    /* model-strip: clear renderModelInfo.model (keep the rest of renderModelInfo if present). */
-    QJsonObject rmi = edit.value("renderModelInfo").isObject() ? edit.value("renderModelInfo").toObject()
-                                                               : QJsonObject();
-    rmi.insert("model", QString(""));
-    edit.insert("renderModelInfo", rmi);
-
-    /* className/inherit live on the entityDef object (the OG sets them there: defsub+0x60/+0x58). */
-    ed.insert("className", QString("idTarget_Timeline"));
-    ed.insert("inherit",   QString("snapmaps/unknown"));
-
-    st.insert("edit", edit);
-    ed.insert("state", st);
-    root.insert("entityDef", ed);
-    QByteArray out = QJsonDocument(root).toJson(QJsonDocument::Compact);
-    return std::string(out.constData(), (size_t)out.size());
-}
-
-/* "Timeline N": N = 1 + count of existing timeline-class entities (idTarget_Timeline / idEncounterManager -- the
- * same set the Timelines list filters on, sh_tabs.cpp). A fresh timeline gets a sensible default name in the list
- * instead of a blank/inherited one (the Timelines list labels each row by the entity displayName). */
-static std::string tl_next_timeline_name(sh_iface *iface)
-{
-    int n = 0;
-    int cnt = (iface && iface->vtbl && iface->vtbl->entity_count) ? iface->vtbl->entity_count(iface) : 0;
-    for (int id = 0; id < cnt; ++id) {
-        char cls[128] = {0};
-        if (iface->vtbl->get_classname_copy &&
-            iface->vtbl->get_classname_copy(iface, id, cls, (int)sizeof(cls))) {
-            if (!strcmp(cls, "idTarget_Timeline") || !strcmp(cls, "idEncounterManager")) ++n;
-        }
-    }
-    char buf[32];
-    _snprintf_s(buf, sizeof buf, _TRUNCATE, "Timeline %d", n + 1);
-    return std::string(buf);
-}
-
-/* replace the FIRST occurrence of `from` with `to` in `s`; returns true if found. */
-static bool tl_replace_first(std::string &s, const char *from, const std::string &to)
-{
-    size_t pos = s.find(from);
-    if (pos == std::string::npos) return false;
-    s.replace(pos, strlen(from), to);
-    return true;
-}
-
-/* Build a fresh idSnapEntityPrefab for a NEW timeline host by SUBSTITUTING the byte-exact, engine-accepted OG
- * mkcmd prefab template (SH_MKCMD_PREFAB_TEMPLATE -- the same one snapstack.cpp::h_mkcmd pastes). The template is
- * an idTarget_Command; we turn it into an idTarget_Timeline with 3 targeted string replaces:
- *   - displayName  "idTarget_Command" -> "Timeline N"               (a sensible default name in the list)
- *   - className    "idTarget_Command" -> "idTarget_Timeline"
- *   - the edit body  commandText placeholder -> an empty componentTimeLine
- * Everything else (grabAxis/grabDistance/cameraYaw/customIcon/variables/references/targets/spawnPosition) is kept
- * VERBATIM, so the float leaves carry the engine-required ".0" + customIcon is present -- the two things a
- * Qt-rebuilt prefab got WRONG (it serialized 0.0 -> "0" -> "...grabAxis.mat[0].z is not a floating point", and
- * omitted "...entities[0].customIcon"). The inherit is already "snapmaps/unknown" in the template (no model). The
- * entity is left GRABBED (the template's grab transform) so the engine paste-instantiate places it at the cursor.
- * NOTE (v2 polish): the template carries 16 unused persistentInteger vars (idTarget_Command's) -- cosmetic +
- * engine-valid on a timeline; strip later if it clutters the variable panel. Returns "" on a substitution miss. */
-static std::string tl_build_spawn_prefab(sh_iface *iface)
-{
-    std::string p(SH_MKCMD_PREFAB_TEMPLATE);
-    std::string name = tl_next_timeline_name(iface);   /* plain ASCII "Timeline N" -- no JSON escaping needed */
-    if (!tl_replace_first(p, "\"displayName\":\"idTarget_Command\"", "\"displayName\":\"" + name + "\""))
-        return std::string();
-    if (!tl_replace_first(p, "\"className\":\"idTarget_Command\"", "\"className\":\"idTarget_Timeline\""))
-        return std::string();
-    /* the template edit body is: {"commandText" : "__SNAPHAK_MKCMD_COMMANDTEXT__","spawnPosition":{...}} */
-    if (!tl_replace_first(p, "\"commandText\" : \"__SNAPHAK_MKCMD_COMMANDTEXT__\"",
-                             "\"componentTimeLine\":{\"entityEvents\":{\"num\":0}}"))
-        return std::string();
-    /* STRIP the OG command-entity's 16 persistentInteger variables -- idTarget_Command baggage a timeline has no
-     * use for, whose `idRange< int >` bounds spam "Issue deserializing variable" console warnings. Replace the
-     * whole variables block (unique outer "~type":"idSnapVariables") with an EMPTY idSnapVariables (no vars of any
-     * type). persistentInteger=[] removes the bounds entirely -> no idRange warning, and a fresh timeline carries
-     * zero phantom variables. */
-    {
-        size_t vpos = p.find("\"variables\":{");
-        size_t vend = (vpos == std::string::npos) ? std::string::npos
-                                                   : p.find("\"~type\":\"idSnapVariables\"}", vpos);
-        if (vpos != std::string::npos && vend != std::string::npos) {
-            vend += strlen("\"~type\":\"idSnapVariables\"}");
-            p.replace(vpos, vend - vpos,
-                "\"variables\":{\"allocCount\":[0,0,0,0,0,0,0,0,0,0],\"boolean\":[],\"cachedEntity\":[],"
-                "\"color\":[],\"customEvent\":[],\"integer\":[],\"number\":[],\"persistentInteger\":[],"
-                "\"playerResource\":[],\"string\":[],\"teamResource\":[],\"~type\":\"idSnapVariables\"}");
-        }
-    }
-    return p;
-}
-
-void sh_timeline_create_new(ShWinController *win)
-{
-    /* CREATE-NEW-TIMELINE (clone EXCEEDS OG -- the OG button is unwired; create-timeline-re). Two branches,
-     * both gated on being TABBED INSIDE a module (EntityMode):
-     *   - an entity is SELECTED -> MORPH it into a timeline host (className=idTarget_Timeline,
-     *     inherit=snapmaps/unknown, empty componentTimeLine, model stripped) via the C2 bss-apply, then open it.
-     *   - NOTHING selected -> SPAWN a fresh idTarget_Timeline host GRABBED at the camera center (the prefab
-     *     paste). The user then double-clicks it in the Timelines list to author it. */
-    if (!win || !win->iface) return;
-    sh_iface *iface = win->iface;
-
-    /* GATE (FACET 1): only inside a module. (The Qt button is also grayed out off-EntityMode -- belt + braces.) */
-    if (!tl_iface_is_entity_mode(iface)) {
-        tl_iface_toast(iface, "Timeline", "Create New Timeline: tab into a module first.");
-        return;
-    }
-
-    /* is anything selected NOW? (FACET 2 -- get_selection count > 0). */
-    int ids[1] = {-1};
-    int nsel = (iface->vtbl && iface->vtbl->get_selection) ? iface->vtbl->get_selection(iface, ids, 1) : 0;
-
-    /* The selection must be a LIVE entity. After a DELETE the editor selection can dangle at the freed slot; the
-     * MORPH branch below would then reclass that freed entity, and the atomic +0x268 apply's class-derive compat
-     * check reads the dangling className idStr -> an access-violation in the engine string compare (the observed
-     * delete-timeline-then-create-timeline crash). A stale/invalid selection is treated as "nothing selected" so
-     * we fall through to the SPAWN branch (create a fresh timeline) -- the same is_valid_id guard every other
-     * per-entity read uses (tl_build_entity_model, sh_tabs). */
-    bool sel_live = (nsel > 0 && ids[0] >= 0 && tl_iface_is_valid(iface, ids[0]));
-
-    if (sel_live) {
-        /* MORPH branch: reclass the selected entity into a timeline host + strip its model. LIVE-FIX 2026-06-25:
-         * the class+inherit must go through the ATOMIC +0x268 apply, NOT the bss-apply alone -- the bss changed
-         * className but left the engine inherit at the entity's original (e.g. snapmaps/audio/2d_speaker), so the
-         * snapmaps/unknown-forced model-strip never landed AND later commits got REJECTED by the compat guard
-         * ("idTarget_Timeline does not derive from <old-inherit>'s base"). Mirror the SnapStack/Save-to-Decl
-         * pattern: atomic apply (FINAL-pair check) -> bss-apply for componentTimeLine -> re-assert (the explicit
-         * pair wins over the rebuild's revert, so the morph sticks in defsub+0x60/+0x58). */
-        int hostId = ids[0];
-        std::string mname = tl_next_timeline_name(iface);   /* computed BEFORE the reclass (hostId not yet a timeline) */
-        int r = tl_iface_apply_class_inherit(iface, hostId, "idTarget_Timeline", "snapmaps/unknown");  /* +0x268 atomic */
-        if (r == 0) {
-            tl_iface_toast(iface, "Timeline", "Create New Timeline: this entity can't become a timeline host (incompatible class).");
-            return;
-        }
-        std::string full = tl_iface_serialize_entity(iface, hostId);
-        if (full.empty()) { tl_iface_toast(iface, "Timeline", "Create New Timeline: could not read the selected entity."); return; }
-        std::string patched = tl_build_timeline_host_json(full);
-        if (patched.empty()) { tl_iface_toast(iface, "Timeline", "Create New Timeline: host-morph build failed."); return; }
-        if (!tl_iface_schedule_apply(iface, hostId, patched, "create-timeline")) {
-            tl_iface_toast(iface, "Timeline", "Create New Timeline: morph schedule failed (editor down?).");
-            return;
-        }
-        tl_iface_apply_class_inherit(iface, hostId, "idTarget_Timeline", "snapmaps/unknown");  /* +0x268 RE-ASSERT */
-        /* default-name ONLY if the source entity had no meaningful displayName (don't clobber an intentional one).
-         * The Timelines list labels each row by displayName, so an unnamed morph would otherwise show blank. */
-        if (iface->vtbl->get_displayname && iface->vtbl->set_entity_0x170) {
-            char dn[128] = {0};
-            iface->vtbl->get_displayname(iface, hostId, dn, (int)sizeof(dn));
-            if (!dn[0]) iface->vtbl->set_entity_0x170(iface, hostId, mname.c_str());
-        }
-        /* in-place reclass leaves entity_count UNCHANGED, so the count-gated list poll won't catch it -> force a
-         * Timelines-list re-scan so the morphed host appears WITHOUT a manual Refresh (Task B). */
-        if (win) win->flagword |= SH_FLAG_REBUILD_LIST;
-        tl_iface_toast(iface, "Timeline", "Create New Timeline: converted the selected entity into a timeline host.");
-        /* open the editor on the morphed host so it commits thereafter (TL+0xf8 = hostId). */
-        sh_timeline_open(win, hostId);
-        return;
-    }
-
-    /* SPAWN branch (Path B): build the timeline prefab from the byte-exact OG template (tl_build_spawn_prefab),
-     * then schedule a kind=2 STAGE+INSTANTIATE: the backend deserializes it into editor+0x209a8 AND calls the
-     * engine paste-instantiate (PasteInstantiate FUN_14054f950, RE'd by timeline-spawn-instantiate-re) so the
-     * host is actually PLACED in the map (camera-relative grab drop + AddToSelection) -> it auto-appears in the
-     * Timelines list (entity_count +1 -> the count-poll rebuild). Plain mkcmd stays kind=1 (stage-only). */
-    std::string prefab = tl_build_spawn_prefab(iface);
-    if (prefab.empty()) { tl_iface_toast(iface, "Timeline", "Create New Timeline: prefab build failed (template substitution miss)."); return; }
-    sh_apply_item it;
-    it.kind = 2;                 /* stage + INSTANTIATE (place the new timeline), not stage-only mkcmd */
-    it.id   = 0;
-    it.text = prefab.c_str();
-    int ok = (iface->vtbl && iface->vtbl->apply_edit) ? iface->vtbl->apply_edit(iface, &it, 1, "create-timeline") : 0;
-    if (!ok) { tl_iface_toast(iface, "Timeline", "Create New Timeline: could not schedule (editor down?)."); return; }
-    /* the deferred instantiate places the host + its className resolves a beat later -> re-scan the Timelines
-     * list for ~1.5s so it self-appears without a manual Refresh (sh_dispatch_flagword consumes this). */
-    win->spawn_rebuild_frames = 45;
-    /* The backend places + selects the host on the game thread and toasts the real result ("create-timeline:
-     * applied 1/1"); this frontend toast is the scheduled-acknowledgement. */
-    tl_iface_toast(iface, "Timeline", "Create New Timeline: placing a new timeline at the camera (it will be selected).");
-}
 
 void sh_timeline_commit(ShWinController *win)
 {

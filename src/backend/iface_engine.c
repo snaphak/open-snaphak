@@ -495,6 +495,15 @@ static const char *slot_id_to_string(sh_iface *self, int id, char *buf, int cap)
     return buf;
 }
 
+/* PUBLIC wrapper over slot_id_to_string -- resolve an entity id to its full module-qualified id-string (the
+ * `targets`-field ref form "<modidx>_<modname>/<inherit>_<id>"). A GLOBAL entity yields the "<inherit>_<id>
+ * (no module)" form, which has no resolvable ref -- the caller must reject that. Used by the sh_target_any
+ * targets-write (Fix B, apply_engine). */
+const char *ie_resolve_id_string(int id, char *buf, int cap)
+{
+    return slot_id_to_string(NULL, id, buf, cap);
+}
+
 /* +0x48 classname (filtcls + the Entity-State read-sync): read defsub+0x60 (the className idStr's data ptr)
  * DIRECTLY, matching the OG (FUN_1800068e0 reads *(defsub+0x60)). This reflects a MORPH IMMEDIATELY (the RAW
  * field the +0x268 atomic apply / the re-assert writes), unlike the resolved-decl blob *(ent+8)+0x1c8+0x38
@@ -994,7 +1003,7 @@ static int slot_id_dev_layer_hidden(sh_iface *self, int id)
  * wire-any hook processes a target pick. A wire connect nets no entity-COUNT change, so the Studio entity
  * list (rebuilt only on a count change) leaves the chain's module-name labels stale until a manual refresh.
  * The UI think-loop polls THIS alongside entity_count and forces a list rebuild when it changes -- so the
- * labels auto-settle after a wire (mirroring the spawn_rebuild_frames pattern). */
+ * labels auto-settle after a wire (via the wire_rebuild_frames re-scan window). */
 static int slot_wire_edit_generation(sh_iface *self) { (void)self; return sh_wiring_cleandirect_generation(); }
 
 /* ================================================================ install ========================== */

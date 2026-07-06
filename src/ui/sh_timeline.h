@@ -34,16 +34,26 @@
  *   entityDef.state.edit.componentTimeLine, and SCHEDULEs it via iface +0xd0 (the clone_bss_apply main-
  *   thread path). So the timeline commit IS a bss-style apply on the timeline entity id -- decl-safe + tested.
  *
- * FAITHFUL QUIRKS (reproduced deliberately; a later-fix pass corrects them):
- *   - Create-New-Timeline is BROKEN in OG (button_create_new_timeline -> an unresolved module-id -> TL+0xf8
- *     never resolves -> the `if(TL+0xf8 != -1)` commit guard SKIPS). REPRODUCED: sh_timeline_create_new
- *     opens an editor with entity_id = -1 so the commit guard skips. Do NOT fix it (a later fix pass).
+ * TIMELINE CREATION is NOT done here: there is no clone-side "create timeline" path (both the from-scratch
+ * SPAWN and the reclass-a-selected-entity MORPH corrupted the map -- the clone cannot fabricate a timeline
+ * entity outside the engine's own creation path). A timeline is created by PLACING one from the in-game SnapMap
+ * entity palette (a built-in decl override makes it selectable there); this Timeline-Editor then AUTHORS events
+ * on the already-placed, engine-validated timeline.
+ *
+ * FAITHFUL QUIRK (reproduced deliberately):
  *   - the `componentTimeline`->`componentTimeLine` canonicalization (FUN_180012458) is reproduced.
  */
 #ifndef SH_TIMELINE_H
 #define SH_TIMELINE_H
 
 struct ShWinController;
+struct sh_iface;
+
+/* Rewrite a palette-placed Timeline's `inherit` from our `snapmaps/editor_only/placeholder_target` override to
+ * the universal `snapmaps/unknown` so the saved map is portable (reloads without our override). className stays
+ * idTarget_Timeline (no reclass -> no crash surface); a raw-JSON splice + the main-thread bss apply. Idempotent
+ * one-shot; returns true iff a normalize was scheduled. Called from the sh_tabs poll on a world change. */
+bool sh_timeline_normalize_inherit(sh_iface *iface, int id);
 
 /* OPEN the Timeline-Editor on the given timeline entity id (the Timelines-tab double-click target, or a
  * Timeline-Editor selection). Builds the per-timeline QTabWidget TL, stores it on win->timeline_tl (OG
@@ -60,11 +70,6 @@ void sh_timeline_open_pending(ShWinController *win);
 /* insert_entity_event.clicked (port FUN_180011e9c / FUN_180011288): append an empty event-row to the
  * currently-shown inner tab (a new EventTime line-edit + eventDef combobox + an empty arg area). */
 void sh_timeline_insert_event(ShWinController *win);
-
-/* button_create_new_timeline.clicked -- BROKEN faithful: opens a Timeline-Editor whose entity_id never
- * resolves (-1), so the |0x80 commit guard `if(entity_id != -1)` skips. Reproduces the OG brokenness; do
- * NOT fix (a deliberate faithful-broken reproduction; the later-fix pass corrects it). */
-void sh_timeline_create_new(ShWinController *win);
 
 /* The |0x80 APPLY_TIMELINE consumer (save_entity_timeline.clicked -> WIN[0]|0x80 -> here): COLLECT the UI
  * rows back into the nested componentTimeLine decl object (the GOOD {<declType>:<declName>} form), build the

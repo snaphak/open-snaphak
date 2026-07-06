@@ -844,17 +844,6 @@ void sh_dispatch_flagword(ShWinController *win)
 
     camera_vec3_sync(win);   /* Camera-Origin: UNCONDITIONAL -- the OG runs it outside the Synchronize gate. */
 
-    /* Create-New-Timeline GATE (clone EXCEEDS OG): gray the button out unless TABBED INSIDE a module (EntityMode,
-     * iface +0x1c0). Cheap per-frame read; the create handler re-checks (belt + braces). create-timeline-re. */
-    {
-        QPushButton *cnt_btn = static_cast<QPushButton *>(WUI(SH_UI_button_create_new_timeline));
-        if (cnt_btn) {
-            bool inModule = iface && iface->vtbl && iface->vtbl->is_entity_mode
-                            && iface->vtbl->is_entity_mode(iface) != 0;
-            if (cnt_btn->isEnabled() != inModule) cnt_btn->setEnabled(inModule);
-        }
-    }
-
     /* AUTO-POPULATE / auto-PRUNE the lists. entity_count goes 0 -> N on map load and rises on an ADD; a change
      * raises |1 so the list fills without a manual Refresh. A DELETE, however, does NOT shrink entity_count -- the
      * freed slot stays (ids are stable indices into arrObj+0x6a8), so a deleted entity would linger in the
@@ -888,17 +877,31 @@ void sh_dispatch_flagword(ShWinController *win)
             win->last_valid_count  = valid;
             win->last_world_sig    = sig;
             win->flagword |= SH_FLAG_REBUILD_LIST;
+            /* PORTABLE-INHERIT NORMALIZE (create-timeline-re): a Timeline placed from the in-game palette is
+             * spawned from our repurposed `snapmaps/editor_only/placeholder_target` entityDef, so the entity
+             * records that as its `inherit` -> the saved map would only reload where our override is installed.
+             * Rewrite it to the universal `snapmaps/unknown` so the map is portable. Gated on THIS world change
+             * (cheap -- only runs when something was placed/edited) + idempotent one-shot (after the rewrite the
+             * inherit is snapmaps/unknown and never re-matches). className stays idTarget_Timeline (no reclass ->
+             * none of the render-node/crash surface). */
+            if (iface && iface->vtbl && iface->vtbl->get_classname_copy && iface->vtbl->get_inherit_copy) {
+                for (int id = 0; id < cnt; id++) {
+                    if (!iface_is_valid_id(iface, id)) continue;
+                    char cls[128] = {0};
+                    if (!iface->vtbl->get_classname_copy(iface, id, cls, (int)sizeof cls)) continue;
+                    if (strcmp(cls, "idTarget_Timeline") != 0) continue;
+                    char inh[192] = {0};
+                    if (!iface->vtbl->get_inherit_copy(iface, id, inh, (int)sizeof inh)) continue;
+                    if (strcmp(inh, "snapmaps/editor_only/placeholder_target") != 0) continue;
+                    sh_timeline_normalize_inherit(iface, id);
+                }
+            }
         }
     }
 
-    /* QOL: re-scan a few times over ~1.5s after a from-scratch timeline SPAWN. The spawn places the entity on
-     * the game thread (deferred) + its className resolves a beat later, so the one-shot count-poll above can
-     * rebuild BEFORE the new entity reads as idTarget_Timeline -> it misses the className-filtered Timelines list
-     * on the first rebuild (the manual Refresh worked only because it ran later). This auto-Refreshes for ~1.5s. */
-    if (win->spawn_rebuild_frames > 0) {
-        win->spawn_rebuild_frames--;
-        if ((win->spawn_rebuild_frames % 15) == 0) win->flagword |= SH_FLAG_REBUILD_LIST;
-    }
+    /* (A morph reclasses an already-placed entity, so the world-sig hash above -- which folds each entity's
+     * id-string, and the id-string embeds the className -- rebuilds the Timelines list on its own. No post-morph
+     * ticker is needed; the from-scratch SPAWN ticker + its pending-morph tick were removed with the SPAWN path.) */
 
     /* QOL: wire-any auto-settle. The backend bumps iface->vtbl->wire_edit_generation (+0x288) on each
      * sh_target_any wire connect edit. A wire connect nets NO entity_count/valid_count change, so the count-

@@ -359,15 +359,6 @@ const sig_entry BACKEND_ENGINE_SIGNATURES[] = {
     { "ClearSelection",
       "45 33 D2 44 39 91 88 00 00 00",
       0x59FA00u },
-    { "PasteInstantiate", /* FUN_14054f950 -- the engine paste-INSTANTIATE consumer: void(prefab=editor+0x209a8,
-                           * editor). Instantiates each staged-prefab entity into the live map (register +
-                           * AddToSelection 0x59f210) at a camera-relative grab transform; does NOT consume the
-                           * slot. The clone's create-from-scratch timeline (sh_timeline.cpp SPAWN -> kind=2) calls
-                           * it AFTER ae_mkcmd_one stages the prefab into editor+0x209a8. 28-byte zero-wildcard
-                           * prologue (mov rax,rsp; push rbp/rsi/rdi/r12-r15; lea rbp,[rax-0x858]; sub rsp,0x920),
-                           * capstone scan HITS:1. RE'd DIRECT from our own decompile. */
-      "48 8B C4 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 A8 F7 FF FF 48 81 EC 20 09 00 00",
-      0x54F950u },
     { "WireConnectCreator1", /* FUN_140cdb990 -- the editor wire tool's connect creator for an OUTPUT-NODE
                               * source (the pick processor's creator-selector 1, vs cdbb40's selector 0 for a
                               * base-entity source). wiring_cleandirect.c detours it: while sh_target_any is in

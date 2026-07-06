@@ -33,6 +33,7 @@
 #include "recovery.h"
 #include "shield_sigs.h"
 #include "veh.h"
+#pragma comment(lib, "user32.lib")   /* MessageBoxA -- the crash popup */
 
 extern uint8_t *g_doom_base;
 extern size_t   g_doom_size;
@@ -48,9 +49,19 @@ static uintptr_t resolver_hi_rva(void) { return resolver_lo_rva() + RESOLVER_SPA
 #define SHIELD_MAX_REDIRECTS 8
 static volatile LONG g_redirects = 0;    /* Class-B/fallback Error(6) redirects (runaway-guarded) */
 static volatile LONG g_classa_seen = 0;  /* Class-A in-editor recoveries (log rate-limit only; NOT capped) */
+static volatile LONG g_visleaf_seen = 0; /* vis-leaf micro-recoveries (log rate-limit only; NOT capped) */
 static volatile LONG g_diag_seen = 0;    /* DIAGNOSTIC: count of AVs the VEH has logged */
+static volatile LONG g_rn_seen = 0;      /* DIAGNOSTIC: render-node (vis-leaf) fault detail count */
 static char g_why[200];   /* persists: Error(6) reads it as the fmt (rcx) after we return */
 static char g_diag[260];
+static char g_rndiag[220];
+
+/* ---- CRASH POPUP + STACK: name exactly what faulted (type + site + call stack) to the log AND a user
+ * dialog, so a serious fault is never silent. Rate-limited (a per-frame fault would otherwise spam). ------ */
+#define SHIELD_MAX_POPUP 3
+static volatile LONG g_popup_seen = 0;
+static char g_crashbody[1024];
+static char g_crashstk[512];
 
 /* ---- FIRST-CHANCE CRASH LOGGER (crash-forensics: name a death the recovery paths never touch) --------
  * The recovery logic below only ACTS on AVs/HW-faults whose rip is INSIDE DOOM; it CONTINUE_SEARCHes every
@@ -180,6 +191,44 @@ static int unwind_to_rva_range(CONTEXT *ctx, uintptr_t lo_rva, uintptr_t hi_rva,
     return 0;
 }
 
+/* ---- Capture the FAULTING call stack as a compact "DOOM+0xRVA <- ..." string (for the crash log + popup).
+ * Walks a COPY of the fault context with the OS unwinder (like unwind_to_rva_range); non-DOOM frames show as
+ * module+off. SEH-guarded per frame so a wild frame just ends the walk -- never re-faults the VEH. */
+static void capture_fault_stack(const CONTEXT *ctx_in, char *out, size_t cap, int maxframes)
+{
+    CONTEXT ctx = *ctx_in;
+    size_t used = 0;
+    if (cap) out[0] = 0;
+    for (int i = 0; i < maxframes && used + 12 < cap; i++) {
+        __try {
+            const char *sep = used ? "\n    " : "";
+            if (rip_in_doom((void *)ctx.Rip)) {
+                uintptr_t r = (uintptr_t)ctx.Rip - (uintptr_t)g_doom_base;
+                int n = _snprintf_s(out + used, cap - used, _TRUNCATE, "%sDOOM+0x%llx", sep,
+                                    (unsigned long long)r);
+                if (n <= 0) break; used += (size_t)n;
+            } else {
+                char mod[64]; uintptr_t moff = 0;
+                module_at((void *)ctx.Rip, mod, sizeof mod, &moff);
+                int n = _snprintf_s(out + used, cap - used, _TRUNCATE, "%s%s+0x%llx", sep, mod,
+                                    (unsigned long long)moff);
+                if (n <= 0) break; used += (size_t)n;
+            }
+            DWORD64 imageBase = 0;
+            PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry((DWORD64)ctx.Rip, &imageBase, NULL);
+            if (fn == NULL) {
+                uintptr_t sp = (uintptr_t)ctx.Rsp;
+                if (sp == 0 || is_wild((void *)sp)) break;
+                ctx.Rip = *(uintptr_t *)sp; ctx.Rsp = sp + 8;
+            } else {
+                PVOID hd = NULL; DWORD64 ef = 0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, (DWORD64)ctx.Rip, fn, &ctx, &hd, &ef, NULL);
+            }
+            if (ctx.Rip == 0) break;
+        } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+    }
+}
+
 /* A committed, writable 4-byte slot? (guard before the shield pokes engine memory). */
 static int writable_int(uintptr_t addr)
 {
@@ -238,6 +287,40 @@ static int try_revert_csr_entry(const CONTEXT *ctx)
 
     *(int *)entry_addr = valid_value;                        /* CLAMP -> next frame reads a valid index */
     return 1;
+}
+
+/* ---- In-shield NEUTRALIZE a dangling render-node connection ref (the create-timeline draw-fault class) --
+ * A DIFFERENT fault shape from try_revert_csr_entry's corrupt-CSR-index. Here the visibility leaf 0xD32A30
+ * faults reading *(node+0x70) / *(node+0x80) -- an OUTPUT / INPUT connection-node ref -- that DANGLES: a
+ * node-less entity (a reclassed idTarget_Timeline) inherited a now-freed connection-node ptr from a prior
+ * node-having occupant (an idTarget_Command) of its render-node slot. The per-module view build 0x5E6620
+ * only clears such a ref LATER (its else-branch never rebuilds a node-less entry), so on the exit-Play view
+ * rebuild the resolver reads the dangling ref one frame before the clear -> wild AV, re-firing every frame.
+ * At the frameless leaf RCX still = the render-node; RAX = the faulting ref value (*(node+0x70) at 0xD32A39,
+ * or *(node+0x80) at 0xD32A4B). We NULL the exact ref that faulted (its value == RAX) so the next frame's
+ * predicate reads a null ref -> no wire drawn, no fault -- the correct state for a node-less entity. HEAVILY
+ * GUARDED (rip in the vis-leaf, node committed+readable, the ref slot writable). Returns 1 if it nulled a
+ * ref. (DIRECT: disasm 0xD32A30 = MOV RAX,[RCX+0x70]; TEST; JZ; CMP byte [RAX+0x30].) */
+static int try_neutralize_rendernode(const CONTEXT *ctx)
+{
+    uintptr_t rva, node, rax;
+    if (!rip_in_doom((void *)ctx->Rip)) return 0;
+    rva = (uintptr_t)ctx->Rip - (uintptr_t)g_doom_base;
+    if (!(rva >= RVA_VIS_LEAF_LO && rva < RVA_VIS_LEAF_HI)) return 0;
+    node = (uintptr_t)ctx->Rcx;                       /* the render-node (RCX, preserved across the leaf) */
+    rax  = (uintptr_t)ctx->Rax;                        /* the faulting connection-node ref value */
+    if (node == 0 || is_wild((void *)node) || rax == 0) return 0;
+    __try {
+        if (*(uintptr_t *)(node + 0x70) == rax && writable_int(node + 0x70)) {
+            *(uintptr_t *)(node + 0x70) = 0;
+            return 1;
+        }
+        if (*(uintptr_t *)(node + 0x80) == rax && writable_int(node + 0x80)) {
+            *(uintptr_t *)(node + 0x80) = 0;
+            return 1;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return 0;
 }
 
 /* LAYER 1 -- the non-AV hardware-fault codes the shield ALSO recovers: any CPU exception that is a crash
@@ -341,12 +424,21 @@ static LONG CALLBACK shield_veh(PEXCEPTION_POINTERS ep)
                 ti = (uintptr_t)er->ExceptionInformation[2] - (uintptr_t)g_doom_base;
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
         force_recovery_gate();
+        log_engine_error_text();     /* record the engine's verbatim error text -- e.g. a masked load-time FatalError */
         if (InterlockedIncrement(&g_cxx_seen) <= 10) {
             _snprintf_s(g_diag, sizeof g_diag, _TRUNCATE,
                 "DOOM C++ throw -> forced gate (errState=%d load_state=%d throwInfo_rva=0x%llx)",
                 es, ls, (unsigned long long)ti);
             shield_fault df = { "diag", -1, g_diag, 0, 0 };
             shield_emit(&df);
+            /* capture the THROWING call stack -- for a masked heap-corruption FatalError ("Memory corruption
+             * before block!") this names the heap operation (free/alloc/check) that detected it + its caller,
+             * narrowing which structure was overflowed. SEH-guarded per frame inside the walker. */
+            {
+                char stk[512];
+                capture_fault_stack(ep->ContextRecord, stk, sizeof stk, 20);
+                if (stk[0]) { shield_fault sf = { "cxxstack", -1, stk, 0, 0 }; shield_emit(&sf); }
+            }
         }
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -386,12 +478,68 @@ static LONG CALLBACK shield_veh(PEXCEPTION_POINTERS ep)
         shield_emit(&df);
     }
 
+    /* RENDER-NODE fault detail (root-cause data for the create-timeline draw fault): at the vis-leaf
+     * 0xD32A30 RCX = the render-node, RAX = the faulting connection-node ref. Compute the node's array
+     * index (base = *(editor+0x1d0)) so the log names WHICH entity's render-node slot dangled + its
+     * +0x70/+0x80 values. SEH-guarded (a wild read while formatting must never re-fault the VEH). */
+    {
+        uintptr_t rrva = (uintptr_t)rip - (uintptr_t)g_doom_base;
+        if (is_av && rrva >= RVA_VIS_LEAF_LO && rrva < RVA_VIS_LEAF_HI &&
+            InterlockedIncrement(&g_rn_seen) <= 12) {
+            __try {
+                uintptr_t node = (uintptr_t)ep->ContextRecord->Rcx;
+                uintptr_t rax  = (uintptr_t)ep->ContextRecord->Rax;
+                uintptr_t ed   = (uintptr_t)g_doom_base + RVA_EDITOR_SINGLETON;
+                uintptr_t base = *(uintptr_t *)(ed + 0x1d0);
+                long idx = (base && !is_wild((void *)base)) ? (long)(((intptr_t)node - (intptr_t)base) / 0x180) : -1;
+                uintptr_t p70 = 0, p80 = 0;
+                if (!is_wild((void *)node)) { p70 = *(uintptr_t *)(node + 0x70); p80 = *(uintptr_t *)(node + 0x80); }
+                _snprintf_s(g_rndiag, sizeof g_rndiag, _TRUNCATE,
+                    "RN-FAULT node=%p idx=%ld base=%p +70=%p +80=%p rax=%p",
+                    (void *)node, idx, (void *)base, (void *)p70, (void *)p80, (void *)rax);
+                shield_fault rf = { "rn", (int)code, g_rndiag, rrva, rax };
+                shield_emit(&rf);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+    }
+
     uintptr_t rva = (uintptr_t)rip - (uintptr_t)g_doom_base;
 
     /* AV-specific: a WILD data AV is the in-editor draw-fault class (Class-A). A committed-but-valid AV is
      * left to the engine's own SEH (redirecting one the engine would have handled is worse than its local
      * handling -- fault-shield-recovery.md scope). Non-AV hardware faults skip this gate -> Class-B. */
     if (is_av) {
+        /* ===== VIS-LEAF MICRO-RECOVERY (BEFORE the wild-gate + Class-A/Class-B) =========================
+         * The render-node visibility predicate FUN_140d32a30 (frameless leaf) derefs node->+0x70 / +0x80
+         * connection refs at 4 sites (0xd32a30/39/3f/4b). During the create-timeline / node-less rebuild
+         * (exit-Play, tab-out to Blueprint, editor re-entry) those slots are transiently bad, so a deref
+         * faults. The SAFE, correct result for a bad/absent connection is FALSE ("no valid connection") --
+         * exactly what a clean node-less slot returns. So redirect RIP to the leaf's own XOR AL,AL;RET tail
+         * (0xd32a54) and resume: the predicate returns FALSE, the resolver skips the node, the frame
+         * completes. STACK-INDEPENDENT (works in EntityMode, Blueprint, AND editor re-entry alike -- unlike
+         * the Class-A editor-Think unwind, which only claims some stacks and lets the rest fall to the heavy
+         * Class-B Error(6)+toast+MessageBox+navigate path -- the cause of the "Error Detected" toast that
+         * still fired on tab-out). SILENT + light (one RIP write; no notice/dialog/navigate). The leaf is
+         * frameless so RSP still points at the return address -> the injected RET returns cleanly to the
+         * resolver. Transient-frame skip: once the rebuild settles the predicate runs normally, so a real
+         * connection loses at most one frame of overlay. RE-DERIVE: RVA_VIS_LEAF_* in engine_layout.h. */
+        if (g_doom_base && rva >= RVA_VIS_LEAF_LO && rva < RVA_VIS_LEAF_FALSE) {
+            /* Per-node skip: redirect to the predicate's own XOR AL,AL;RET tail (return FALSE = no valid
+             * connection, what a clean node-less slot returns). A CLEAN RETURN from the frameless leaf -- it
+             * does NOT unwind past the resolver/build frames. (A tried unwind-to-editor-Think "abort the whole
+             * draw" fast-path was REVERTED: unwinding the frameless leaf out of deep in-flight resolver/build
+             * frames corrupted the engine heap on exit-Play -- "Memory corruption before block!". The clean
+             * per-node return is safe; it is slower under a storm but never corrupts.) Silent. */
+            if (InterlockedIncrement(&g_visleaf_seen) <= 3) {
+                _snprintf_s(g_why, sizeof g_why, _TRUNCATE,
+                    "vis-leaf render-node fault @ 0x%llx (rip+0x%llx) -> predicate forced FALSE (skip node), resumed",
+                    (unsigned long long)(uintptr_t)fault_addr, (unsigned long long)rva);
+                shield_fault vf = { "visleaf", -1, g_why, rva, (uintptr_t)fault_addr };
+                shield_emit(&vf);
+            }
+            ep->ContextRecord->Rip = (DWORD64)((uintptr_t)g_doom_base + RVA_VIS_LEAF_FALSE);
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
         if (!(data && is_wild(fault_addr)))
             return EXCEPTION_CONTINUE_SEARCH;
 
@@ -409,19 +557,27 @@ static LONG CALLBACK shield_veh(PEXCEPTION_POINTERS ep)
             /* Neutralize the corrupt connection (BLIND -- the shield doesn't know the original value) so
              * the resolver stops re-faulting + the editor regains full per-frame function. Uses the
              * ORIGINAL fault context (RBP still = the resolver frame; the leaf is frameless). */
-            int reverted = try_revert_csr_entry(ep->ContextRecord);
+            int reverted   = try_revert_csr_entry(ep->ContextRecord);
+            int rn_cleared = try_neutralize_rendernode(ep->ContextRecord);
             if (InterlockedIncrement(&g_classa_seen) <= 5) {
                 _snprintf_s(g_why, sizeof g_why, _TRUNCATE,
-                    "in-editor draw fault @ 0x%llx (rip+0x%llx) -> aborted draw%s, resumed editor frame",
+                    "in-editor draw fault @ 0x%llx (rip+0x%llx) -> aborted draw%s%s, resumed editor frame",
                     (unsigned long long)(uintptr_t)fault_addr, (unsigned long long)rva,
-                    reverted ? " + reverted bad connection" : "");
+                    reverted ? " + reverted bad connection" : "",
+                    rn_cleared ? " + cleared dangling render-node ref" : "");
                 shield_fault fa = { "action", -1, g_why, rva, (uintptr_t)fault_addr };
                 shield_emit(&fa);
             }
-            /* Arm the in-game NON-TRAPPING notice: the main-thread frame-hook shows an EDITOR-NATIVE
-             * toast (not the menu-shell GDM dialog) so the player sees the fault was caught + reverted
-             * and keeps editing -- no menu-shell/browser activation. */
-            notice_request();
+            /* NO in-game notice for Class-A recoveries. Class-A = a RECOVERED in-editor draw fault -- a
+             * transient render glitch the shield aborts + resumes in place. The create-timeline / node-less
+             * rebuild produces a burst of these across MORE THAN ONE site: the vis-leaf predicate 0xd32a30
+             * (micro-recovered before we ever get here) AND the module-render build ~0x5e68e7 (aborted here).
+             * A per-site notice gate is whack-a-mole; the whole CLASS is spurious -- arming "Error Detected
+             * in map logic" for a fault the shield already recovered in place was the exact repeating-toast
+             * complaint. So Class-A recoveries are SILENT (every one is still logged to shield_faults.log for
+             * diagnostics). SERIOUS faults take the Class-B path below, which keeps its notice + "Fault
+             * Caught" dialog. */
+            /* (intentionally no notice_request() here) */
             *ep->ContextRecord = unwound;
             return EXCEPTION_CONTINUE_EXECUTION;
         }
@@ -440,6 +596,39 @@ static LONG CALLBACK shield_veh(PEXCEPTION_POINTERS ep)
         (unsigned long)code, (unsigned long long)rva);
     shield_fault f = { "load", -1, g_why, rva, (uintptr_t)fault_addr };
     shield_emit(&f);
+
+    /* CRASH DETAIL + USER POPUP: capture the faulting call stack, log it (the citable record), and show the
+     * user a dialog naming exactly what faulted -- so a serious fault is never silent. Rate-limited
+     * (SHIELD_MAX_POPUP) so a per-frame fault can't spam; SEH-guarded so building/showing it can never re-fault
+     * the VEH. MessageBoxA blocks the faulting thread until dismissed, then we resume into the Error(6) recovery
+     * below -- acceptable for a crash. */
+    if (InterlockedIncrement(&g_popup_seen) <= SHIELD_MAX_POPUP) {
+        __try {
+            const char *dir = "";
+            if (is_av && er->NumberParameters >= 1)
+                dir = er->ExceptionInformation[0] == 1 ? " (write to)" :
+                      er->ExceptionInformation[0] == 8 ? " (execute at)" : " (read from)";
+            capture_fault_stack(ep->ContextRecord, g_crashstk, sizeof g_crashstk, 14);
+            shield_fault sk = { "stack", (int)code, g_crashstk, rva, (uintptr_t)fault_addr };
+            shield_emit(&sk);   /* the full call stack -> shield_faults.log */
+            _snprintf_s(g_crashbody, sizeof g_crashbody, _TRUNCATE,
+                "SnapHak caught a fault in DOOM. The editor will try to recover, but this session may be "
+                "unstable -- save to a new slot and restart if things look wrong.\n\n"
+                "Fault:  %s (0x%08lx)%s 0x%llx\n"
+                "Where:  DOOMx64vk.exe+0x%llx\n\n"
+                "Call stack:\n    %s\n\n"
+                "Full details were written to:\n    <DOOM folder>\\snaphak_logs\\shield_faults.log",
+                exc_name(code), (unsigned long)code, dir, (unsigned long long)(uintptr_t)fault_addr,
+                (unsigned long long)rva, g_crashstk[0] ? g_crashstk : "(unavailable)");
+            /* FREE THE MOUSE: DOOM clips the cursor to its window + hides it (captured input), so the user
+             * can't move the pointer to the dialog. Un-clip + force the system cursor visible (ShowCursor is
+             * a refcount -- loop until non-negative, bounded) so the OK button is actually reachable. */
+            ClipCursor(NULL);
+            { int cc = 0; while (ShowCursor(TRUE) < 0 && ++cc < 32) {} }
+            MessageBoxA(NULL, g_crashbody, "SnapHak - Fault Caught",
+                        MB_OK | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
 
     /* Arm the recovery router: the engine's own Frame catch keeps us alive but does NOT navigate (it
      * resumes the editor on the dangling render-world -> re-fault loop). The frame-hook drives the

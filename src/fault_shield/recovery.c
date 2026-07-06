@@ -133,6 +133,23 @@ static int harvest_engine_msg(char *out, size_t n)
     return out[0] != '\0';
 }
 
+/* Harvest + log the engine's own last-formatted-error text on a downgraded-FatalError / Error(6) throw,
+ * INDEPENDENT of the in-editor toast (notice_tick only fires in-editor, so a LOAD-time FatalError -- e.g. a
+ * decl-registry "Remove_Locked: Resource wasn't found by ID" -- would otherwise never record its verbatim text,
+ * and the fault would have to be reverse-engineered from a bare fault address). Rate-limited; SEH-safe via
+ * harvest_engine_msg. Called from the VEH's C++-throw (Layer 2) path. */
+static volatile LONG g_harvest_logged = 0;
+void log_engine_error_text(void)
+{
+    char msgbuf[HARVEST_MSG_MAX];
+    if (g_harvest_logged >= 16) return;                 /* rate-limit the record */
+    if (harvest_engine_msg(msgbuf, sizeof msgbuf)) {
+        InterlockedIncrement(&g_harvest_logged);
+        shield_fault hf = { "load", -1, msgbuf, 0, 0 };
+        shield_emit(&hf);                               /* the verbatim engine error, on the load-time path too */
+    }
+}
+
 static void notice_tick(void)
 {
     uint8_t      *ed = editor();

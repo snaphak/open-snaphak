@@ -48,6 +48,8 @@
 #define ARR_ENT_COUNT_OFF      0x6a8        /* arrObj+0x6a8 -> entity count (u32) */
 #define ENT_VALID_OFF          0x8          /* entity[id]+8 != 0 => valid; ALSO the clone base (ent+8) */
 #define ENT_DEFSUB_OFF         0x158        /* entity[id]+0x158 -> def sub-object (commit target) */
+/* (render-node bucket re-sync defines removed with the create-timeline path -- the clone no longer edits the
+ * editor's wire-overlay render buckets; a timeline is placed by the engine via the in-game palette.) */
 #define DEFSUB_CLASS_OFF       0x60         /* defsub+0x60 -> classname idStr (commit dst) */
 #define DEFSUB_INHERIT_OFF     0x58         /* defsub+0x58 -> inherit idStr (commit dst) */
 #define ENT_COUNT_CAP         1000000u      /* sanity cap on the entity array count */
@@ -66,20 +68,6 @@
  * FUN_14054f950(editor+0x209a8, editor) after staging (0x54F950, the engine Ctrl+V; not yet wired). */
 #define PASTE_STAGING_OFF      0x209a8
 
-/* GRAB/place-tool sub-object of the editor (editor+0x22330). Captured LIVE by instrumenting the paste handler
- * 0xce1810 -- rdx (its 2nd arg) == editor+0x22330 across 500 hits, editor == r8 (the +0x3056748 singleton). The
- * real Ctrl+V does PasteInstantiate THEN a grab-mode flag-set on this object (FUN_140cf35e0) so the pasted entity
- * is HELD for placement -- and the DROP is what assigns its module. The clone's spawn previously called
- * PasteInstantiate ALONE, leaving the new timeline selected-but-not-grabbed (the orange highlight that won't clear
- * + never joins a module). Mirroring the flag-set makes a from-scratch timeline spawn grabbed, so placing it drops
- * it into the module under the cursor -- true auto-module via the same path copy/paste uses. ALL offsets here are
- * BUILD-SPECIFIC -- RE-DERIVE per build: watch_arm instrument 0xce1810 (rdx-editor = this off) + decompile the
- * grab-mode setter 0xcf35e0 (the 4 field writes below). */
-#define GRAB_TOOL_OFF          0x22330      /* editor -> grab/place-tool sub-object */
-#define GRAB_TOOL_FLAG_2D0     0x2d0        /* byte: &= ~0x04 then |= 0x08 (enter place/grab) */
-#define GRAB_TOOL_FLAG_2D1     0x2d1        /* byte: |= 0x01 */
-#define GRAB_TOOL_MODE_1AC     0x1ac        /* u32 = 4 (tool mode) */
-#define GRAB_TOOL_FLAG_BB8     0xbb8        /* byte = 1 (tool active) */
 
 /* the prefab-from-selection serialize (+0xb0) engine fns. RE-DERIVE off the OG XINPUT1_3
  * FUN_180004210 (the serialize-SELECTION body): a temp prefab is ctor'd via `(DAT_18003e120 + 0x54d0a0)`
@@ -91,13 +79,11 @@
 #define PREFAB_CTOR_RVA        0x54d0a0u   /* idSnapEntityPrefab ctor (OG FUN_180004210 local_6d8 ctor) */
 #define PREFAB_POPULATE_RVA    0x54e410u   /* populate prefab from editor selection (returns char success) */
 #define PREFAB_DTOR_RVA        0x51d870u   /* idSnapEntityPrefab dtor (OG FUN_180004210 cleanup) */
+#define ENT_DESHARE_RVA        0x52c920u   /* FUN_14052c920(&array[id]) -- COW make-unique: de-share an entity's 0x6f8
+                                            * block before an in-place edit (the engine's UNIVERSAL edit discipline).
+                                            * RE-DERIVE per build: if *(int*)*slot != 1 -> operator_new(0x6f8) + deep-copy
+                                            * body (FUN_14053d800) + store into slot; returns *slot+8 (the private body). */
 #define PREFAB_TEMP_SIZE       0x220       /* generous sizeof(temp idSnapEntityPrefab) */
-#define PASTE_INSTANTIATE_RVA  0x54f950u   /* PasteInstantiate FUN_14054f950: void(prefab=editor+0x209a8, editor)
-                                            * -- instantiate the staged prefab into the live map + AddToSelection,
-                                            * camera-relative grab placement; does NOT consume the slot. The
-                                            * create-from-scratch timeline SPAWN (kind=2) calls it AFTER staging.
-                                            * sig-resolved ("PasteInstantiate"); this RVA = hook-tolerant fallback.
-                                            * RE'd DIRECT from our own decompile. */
 
 /* ============================================================ apply-chain struct sizes ============== */
 /* DIRECT from the XINPUT1_3 FUN_180004b80 / FUN_180004950 / FUN_1800044a0 decompiles + the engine ctors
@@ -154,13 +140,13 @@ typedef void *(*idstr_ctor_fn)(void *self, const char *cstr);                   
 typedef void  (*idstr_dtor_fn)(void *self);                                           /* IdStrDtor 0x19fd120 */
 typedef void  (*idstr_assign_fn)(void *dstField, const char *cstr);                   /* IdStrAssign 0x1a03e10 */
 typedef void  (*decl_src_rebuild_fn)(void *defsub, const char *srcText, int rebuild); /* DeclSourceRebuild 0x17ae560 */
+typedef void *(*ent_deshare_fn)(void *slot);                                          /* COW make-unique 0x52c920 -- de-share an entity's 0x6f8 block before an in-place edit */
 typedef void  (*buffer_cmd_fn)(void *cmdSys, const char *text);                       /* BufferCommandText 0x1aa3780 */
 typedef void  (*add_command_fn)(void *cmdSys, const char *name, void *cb, void *p3,
                                 const char *help, unsigned int flags);                /* AddCommand 0x1aa3630 */
 typedef void  (*prefab_ctor_fn)(void *self);                                          /* PrefabCtor 0x54d0a0 */
 typedef char  (*prefab_populate_fn)(void *self, void *editor);                        /* PrefabPopulate 0x54e410 */
 typedef void  (*prefab_dtor_fn)(void *self);                                          /* PrefabDtor 0x51d870 */
-typedef void  (*paste_instantiate_fn)(void *staging, void *editor);                   /* PasteInstantiate 0x54f950 */
 
 /* ============================================================ module state (resolved once) ========== */
 static const uint8_t      *g_doom_base   = NULL;
@@ -180,12 +166,12 @@ static idstr_ctor_fn       g_idstr_ctor  = NULL;
 static idstr_dtor_fn       g_idstr_dtor  = NULL;
 static idstr_assign_fn     g_idstr_assign= NULL;
 static decl_src_rebuild_fn g_decl_rebuild= NULL;
+static ent_deshare_fn      g_deshare     = NULL;   /* COW make-unique before an in-place entity edit (engine's universal discipline) */
 static buffer_cmd_fn       g_buffer_cmd  = NULL;
 static add_command_fn      g_add_command = NULL;
 static prefab_ctor_fn      g_prefab_ctor     = NULL;   /* +0xb0 serialize-selection */
 static prefab_populate_fn  g_prefab_populate = NULL;
 static prefab_dtor_fn      g_prefab_dtor     = NULL;
-static paste_instantiate_fn g_paste_instantiate = NULL;  /* create-from-scratch SPAWN: place staged prefab */
 static volatile LONG       g_installed   = 0;
 static volatile LONG       g_cmd_registered = 0;   /* clone_bss_apply registered once (lazy) */
 
@@ -509,6 +495,28 @@ static int ae_apply_one(int id, const char *patched_text)
     void *defsub = NULL;
     if (!ae_read_ptr((const uint8_t *)ent + ENT_DEFSUB_OFF, &defsub) || defsub == NULL) return 0;
 
+    /* DE-SHARE the entity's copy-on-write block BEFORE mutating it -- the engine's UNIVERSAL edit discipline. Every
+     * engine edit path calls the COW make-unique FUN_14052c920 on the entity's slot before touching it (xrefs: 11
+     * call sites); our reclass previously poked the live defsub in place, skipping this. If the 0x6f8 block is
+     * SHARED (refcount != 1 -- an undo snapshot / staging slot aliases it), an in-place mutation corrupts the alias
+     * AND leaves the COW refcount imbalanced, so a later release frees the block while the editor's entity-collection
+     * slot still points at it = the create-timeline use-after-free (de-share-pass AV 0x5a5167 on play-exit /
+     * wire-render AV 0xd32a39 on reload; both DIRECTLY captured). De-share makes THIS slot a private copy (refcount 1)
+     * first (a no-op if already private), then we re-fetch ent + defsub -- the slot now points at the fresh private
+     * block. SEH-guarded; universal (matches the engine -- de-sharing before ANY edit is always correct COW). The
+     * slot = array_base + id*8 (array_base = the entity-ptr array ae_entity_array returns; == the engine's
+     * collection+0xc0). */
+    if (g_deshare) {
+        int deshared = 0;
+        __try { g_deshare((uint8_t *)array + (size_t)id * 8); deshared = 1; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { deshared = 0; }
+        if (deshared) {
+            ent = ae_entity_ptr(array, count, id);
+            if (!ent) return 0;
+            if (!ae_read_ptr((const uint8_t *)ent + ENT_DEFSUB_OFF, &defsub) || defsub == NULL) return 0;
+        }
+    }
+
     /* LAYER C (crash prevention): a class+inherit pair in the patched text where the class does NOT derive
      * from the inherit's base would FATALLY fault the deserialize below (the engine's "Class X does not
      * derive from Y" Error(6), inner-caught -> the fault-shield can't recover it). Reject up front -- extract
@@ -535,7 +543,7 @@ static int ae_apply_one(int id, const char *patched_text)
             /* the source rebuild carries the EDIT (the temp's canonical source includes the leaf) -- always. */
             g_decl_rebuild(defsub, (const char *)srcPtr, 1);             /* 0x17ae560 */
             /* class/inherit: with a full entity these are real values; null -> skip (defensive). */
-            if (clsPtr) g_idstr_assign((uint8_t *)defsub + DEFSUB_CLASS_OFF,   (const char *)clsPtr);
+            if (clsPtr) g_idstr_assign((uint8_t *)defsub + DEFSUB_CLASS_OFF, (const char *)clsPtr);
             if (inhPtr) g_idstr_assign((uint8_t *)defsub + DEFSUB_INHERIT_OFF, (const char *)inhPtr);
             applied = 1;
         }
@@ -543,7 +551,95 @@ static int ae_apply_one(int id, const char *patched_text)
         applied = 0;
     }
     if (def_ctored) { __try { g_def_dtor(tmpDef); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
+
+    /* NOTE (do NOT re-add a decl-unregister here). ae_apply_one rebuilds the decl (g_decl_rebuild); it must NOT
+     * then un-register the per-entity decl via Remove_Locked (0x1801ae0). At an entity's first apply the decl is
+     * not yet findable in the declManager by its reg-id, so Remove_Locked raises FatalError("Resource wasn't
+     * found by ID") (0x1a089e0); the fault-shield's FatalError->Error(6) downgrade then masks that fatal into a
+     * poisoned-but-alive process, so the NEXT map load crashes. Let the decl's OWN destructor un-register it at
+     * teardown, when the registration is complete + findable. (This apply path is shared by the Timeline Editor
+     * commit + bss + wire-target writes; keep it decl-safe.) */
     return applied;
+}
+
+/* ============================================================ sh_target_any TARGETS-WRITE (Fix B) ==========
+ * The correct persisted form of "source's output triggers a TIMELINE" is the SOURCE entity's native
+ * `state.edit.targets` list holding the timeline's full module-qualified id -- on fire the source posts
+ * `activate` to each target -> the timeline plays (DIRECT: every working ground-truth map). NOT a SnapMap-logic
+ * CSR `connections` edge (a timeline is a node-less is-target the CSR resolver cannot route -> the stray/dangling
+ * wire that crashes on re-entry/draw). So sh_target_any, for a bare timeline target, SUPPRESSES the CSR edge
+ * (wiring_cleandirect) and calls this to write the targets field via the SAME decl-edit round-trip that authors
+ * componentTimeLine (serialize -> splice -> ae_apply_one). */
+
+/* Insert (or append) `"targets":{"item[N]":"<ref>","num":N+1}` into entityDef.state.edit of a serialized entity
+ * JSON. Raw string splice (the backend carries no JSON lib) -- a malformed result just fails the deserialize in
+ * ae_apply_one (SEH-guarded, no crash). Returns 1 on success (out = spliced), 0 otherwise. */
+static int ae_splice_targets(const char *src, const char *ref, char *out, int cap)
+{
+    if (!src || !ref || !out || cap <= 0) return 0;
+    const char *edit = strstr(src, "\"edit\"");
+    if (!edit) return 0;
+    const char *brace = strchr(edit, '{');
+    if (!brace) return 0;
+    const char *targets = strstr(brace, "\"targets\"");   /* a listener source carries no other 'targets' key */
+    if (targets) {
+        /* APPEND: bump the targets object's "num" + insert a new item[N] before it. */
+        const char *tbrace = strchr(targets, '{');
+        if (!tbrace) return 0;
+        const char *num = strstr(tbrace, "\"num\"");
+        if (!num) return 0;
+        const char *colon = strchr(num, ':');
+        if (!colon) return 0;
+        const char *p = colon + 1; while (*p == ' ' || *p == '\t') p++;
+        int N = atoi(p);
+        while (*p >= '0' && *p <= '9') p++;                /* p := just past the num value */
+        size_t pre = (size_t)(num - src);                 /* everything up to the "num" key */
+        return (_snprintf_s(out, (size_t)cap, _TRUNCATE, "%.*s\"item[%d]\":\"%s\",\"num\":%d%s",
+                            (int)pre, src, N, ref, N + 1, p) > 0) ? 1 : 0;
+    }
+    /* INSERT: a fresh targets object right after the edit "{". */
+    {
+        size_t pre = (size_t)(brace - src) + 1;           /* include the "{" */
+        return (_snprintf_s(out, (size_t)cap, _TRUNCATE, "%.*s\"targets\":{\"item[0]\":\"%s\",\"num\":1},%s",
+                            (int)pre, src, ref, brace + 1) > 0) ? 1 : 0;
+    }
+}
+
+/* kind=3: write the timeline TARGET's id into the SOURCE entity's state.edit.targets. Resolves the target's
+ * module-qualified ref (rejects a still-global "(no module)" target -- its ref would not resolve), serializes
+ * the source, splices, and commits via ae_apply_one. Runs on the main thread (the clone_bss_apply drain). */
+static int ae_apply_target_write(int source_id, int target_id)
+{
+    char ref[256] = {0};
+    const char *r = ie_resolve_id_string(target_id, ref, (int)sizeof ref);
+    if (!r || !ref[0]) return 0;
+    if (strstr(ref, "(no module)")) {
+        backend_log("wire-target: target not in a module yet -- drag the timeline into a module first (skipped)");
+        return 0;
+    }
+    void *array = NULL; uint32_t count = 0;
+    if (!ae_entity_array(&array, &count)) return 0;
+    void *ent = ae_entity_ptr(array, count, source_id);
+    if (!ent) return 0;
+    void *cloneBase = (uint8_t *)ent + ENT_VALID_OFF;     /* ent+8 = the serialize clone base */
+    static char srcjson[64 * 1024];
+    static char patched[64 * 1024 + 512];
+    if (!ae_serialize_to_json("idSnapEntity", cloneBase, srcjson, (int)sizeof srcjson)) return 0;
+    /* IDEMPOTENT: if this exact ref is already in the source's targets, skip the append -- the wire hook can fire
+     * more than once for the same pick, and a duplicate item[N] would trigger the timeline twice. */
+    {
+        char quoted[264];
+        _snprintf_s(quoted, sizeof quoted, _TRUNCATE, "\"%s\"", ref);
+        if (strstr(srcjson, quoted)) { backend_log("wire-target: target already in source.targets -- skipped (idempotent)"); return 1; }
+    }
+    if (!ae_splice_targets(srcjson, ref, patched, (int)sizeof patched)) return 0;
+    int ok = ae_apply_one(source_id, patched);
+    if (ok) {
+        char m[200];
+        _snprintf_s(m, sizeof m, _TRUNCATE, "wire-target: source %d -> state.edit.targets += \"%s\" (applied)", source_id, ref);
+        backend_log(m);
+    }
+    return ok;
 }
 
 /* ============================================================ mkcmd apply (deserialize -> +0x209a8) =
@@ -567,58 +663,6 @@ static int ae_mkcmd_one(const char *prefab_text)
     return ae_deserialize_to_obj(prefab_text, staging, "idSnapEntityPrefab");
 }
 
-/* kind=2: stage the prefab into editor+0x209a8 (like mkcmd) THEN paste-INSTANTIATE it (engine PasteInstantiate
- * FUN_14054f950) so it is actually PLACED in the live map -- the create-from-scratch SPAWN. Plain mkcmd stays
- * kind=1 (stage-only: the user Ctrl+V's it). PasteInstantiate reads editor+0x209a8, instantiates + registers
- * each entity + AddToSelection's it, at a camera-relative grab transform; it does NOT consume the slot, so we
- * call it ONCE per staged prefab.
- *
- * GLOBAL SPAWN (safe + position-correct -- the current shipped behavior): the timeline spawns into the GLOBAL
- * bucket at the camera grab, exactly like a toybox prop. A GLOBAL entity's position is identity-mapped (no module
- * fold), so PasteInstantiate's world grab transform renders at the correct spot -- NO hand-computed position, NO
- * new engine calls, NO crash surface. Anchoring to a module AT BIRTH was tried (temp-swap register into M + a
- * replica of native finalize) and REVERTED: (a) every hand-computed module-local +0x288 was re-derived away by the
- * engine's per-entity refresh (FUN_140595fb0), and (b) the native finalize step FUN_140544c00 AV'd on a paste-built
- * entity's uninitialized ent+0x350. The engine's OWN drag/drop IS a correct + PERSISTENT in-session re-bucket, so a
- * spawned logic entity is module-anchored by dragging it into a module. (The birth-in-module machinery -- spatial
- * pick, converter, finalize -- is retained below, unused, for a future crash-safe re-enable once ent+0x350 is
- * initialized like native birth.) SEH-guarded. Returns 1 iff staged AND instantiate fired. */
-static int ae_mkcmd_instantiate_one(const char *prefab_text)
-{
-    const uint8_t *ed = ae_editor_session();
-    if (!ed || !prefab_text) return 0;
-    if (!ae_mkcmd_one(prefab_text)) return 0;          /* stage the clean prefab into editor+0x209a8 first */
-    if (!g_paste_instantiate) { backend_log("create-timeline: PasteInstantiate unresolved -- staged only"); return 0; }
-    void *staging = (void *)(ed + PASTE_STAGING_OFF);
-
-    int ok = 0;
-    __try { g_paste_instantiate(staging, (void *)ed); ok = 1; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { backend_log("create-timeline: PasteInstantiate SEH (slot/map not ready?)"); ok = 0; }
-
-    /* Enter GRAB mode on the just-instantiated entity -- mirror FUN_140cf35e0 on the editor's grab-tool sub-object
-     * (editor+0x22330) so the timeline is HELD for placement exactly like a Ctrl+V paste. Dropping it then assigns
-     * the module it's placed in (true auto-module, via the engine's own place-then-drop path), and it avoids the
-     * selected-but-not-grabbed "orange highlight won't clear" state. The real paste is PasteInstantiate THEN these
-     * flags; we replicate the 4 writes directly (a trivial leaf) rather than resolve a fragile tiny fn. SEH-guarded:
-     * a shifted-build offset degrades to the prior grab-less behavior, never a crash. */
-    if (ok) {
-        __try {
-            uint8_t *tool = (uint8_t *)(uintptr_t)ed + GRAB_TOOL_OFF;
-            *(volatile uint8_t  *)(tool + GRAB_TOOL_FLAG_2D0) =
-                (uint8_t)((*(volatile uint8_t *)(tool + GRAB_TOOL_FLAG_2D0) & 0xfb) | 0x08);
-            *(volatile uint8_t  *)(tool + GRAB_TOOL_FLAG_2D1) =
-                (uint8_t)( *(volatile uint8_t *)(tool + GRAB_TOOL_FLAG_2D1) | 0x01);
-            *(volatile uint32_t *)(tool + GRAB_TOOL_MODE_1AC)  = 4u;
-            *(volatile uint8_t  *)(tool + GRAB_TOOL_FLAG_BB8)  = 1u;
-            backend_log("create-timeline: entered grab mode -- held for placement (drop assigns the module)");
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            backend_log("create-timeline: grab-mode enter SEH (skipped; spawned selected-only)");
-        }
-    } else {
-        backend_log("create-timeline: instantiate GLOBAL at cursor (position-correct; drag into a module to anchor)");
-    }
-    return ok;
-}
 
 /* ============================================================ the clone_bss_apply command (FIX B) ===
  * The engine drains this on the DOOM main thread at ExecuteCommandBuffer (the decl-safe exec point). It
@@ -657,8 +701,8 @@ static void __cdecl ae_clone_bss_apply_cmd(void)
     int applied = 0;
     for (int i = 0; i < count; i++) {
         if (!items[i].text) continue;
-        int ok = (items[i].kind == 2) ? ae_mkcmd_instantiate_one(items[i].text)
-               : (items[i].kind == 1) ? ae_mkcmd_one(items[i].text)
+        int ok = (items[i].kind == 1) ? ae_mkcmd_one(items[i].text)
+               : (items[i].kind == 3) ? ae_apply_target_write(items[i].id, atoi(items[i].text))
                                       : ae_apply_one(items[i].id, items[i].text);
         if (ok) applied++;
     }
@@ -749,6 +793,21 @@ static int slot_schedule_apply(sh_iface *self, const sh_apply_item *items, int c
     __try { g_buffer_cmd(g_cmdsys, CLONE_BSS_CMD "\n"); enq = 1; }
     __except (EXCEPTION_EXECUTE_HANDLER) { enq = 0; }
     return enq;
+}
+
+/* PUBLIC (Fix B): enqueue a kind=3 targets-write {source, target}. The target id travels as a decimal string in
+ * the item text (the drain parses it back). The actual serialize+splice+apply runs on the DOOM main thread via
+ * the clone_bss_apply command. Called by the sh_target_any confirm hook (wiring_cleandirect) once per wire-any
+ * timeline pick, INSTEAD of the stock creator laying an (invalid, dangling) CSR edge to the timeline. */
+void ae_schedule_target_write(int source_id, int target_id)
+{
+    char tgt[16];
+    _snprintf_s(tgt, sizeof tgt, _TRUNCATE, "%d", target_id);
+    sh_apply_item it;
+    it.kind = 3;
+    it.id   = source_id;
+    it.text = tgt;
+    slot_schedule_apply(NULL, &it, 1, "wire-target");
 }
 
 /* +0xb8 READ-BACK the editor's pending prefab (editor+0x209a8) -> idSnapEntityPrefab JSON (the reference implementation
@@ -894,9 +953,6 @@ int sh_apply_engine_install(const sig_result *results, size_t n, const uint8_t *
     g_decl_rebuild = (decl_src_rebuild_fn)sig_addr_by_name(results, n, "DeclSourceRebuild");
     g_buffer_cmd   = (buffer_cmd_fn)      sig_addr_by_name(results, n, "BufferCommandText");
     g_add_command  = (add_command_fn)     sig_addr_by_name(results, n, "AddCommand");
-    /* PasteInstantiate (create-from-scratch SPAWN): sig-resolved (portable) with the known_rva hook-tolerant
-     * fallback baked into the sig DB; the RVA fallback below covers a clean scan-miss on this build. */
-    g_paste_instantiate = (paste_instantiate_fn) sig_addr_by_name(results, n, "PasteInstantiate");
 
     /* the prefab-from-selection serialize engine fns (+0xb0). These jumptable/inline-prone leaves
      * resolve by FALLBACK RVA off module_base (re-derive-tagged like the editor singleton); a wrong/shifted
@@ -905,8 +961,7 @@ int sh_apply_engine_install(const sig_result *results, size_t n, const uint8_t *
         g_prefab_ctor     = (prefab_ctor_fn)    (module_base + PREFAB_CTOR_RVA);
         g_prefab_populate = (prefab_populate_fn)(module_base + PREFAB_POPULATE_RVA);
         g_prefab_dtor     = (prefab_dtor_fn)    (module_base + PREFAB_DTOR_RVA);
-        if (!g_paste_instantiate)   /* sig scan missed -> this-build RVA fallback (re-derive-tagged) */
-            g_paste_instantiate = (paste_instantiate_fn)(module_base + PASTE_INSTANTIATE_RVA);
+        g_deshare         = (ent_deshare_fn)    (module_base + ENT_DESHARE_RVA);
     }
 
     char line[256];

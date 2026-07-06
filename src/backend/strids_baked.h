@@ -29,6 +29,14 @@ static const strid_baked_t g_strids_baked[] = {
     { "snapentity_metacategory_unknownroot_disp", "Unknown" },
     { "snapentity_category_unknownroot",          "Unknown" },
 
+    /* The built-in "*Custom" palette tab + its shipped entities (Timeline + Unknown). Baked so a clean setup
+     * shows the tab + names with no external strings file; overrides_seed_baked.h ships the matching decls. */
+    { "sh_category_1",    "*Custom" },
+    { "sh_timeline",      "Timeline" },
+    { "sh_timeline_desc", "A timeline that sequences entity events over time. Place it, then open it in the Timeline Editor to author events.^7 Class: ^OidTarget_Timeline" },
+    { "sh_unknown",       "Unknown" },
+    { "sh_unknown_desc",  "An unknown entity not normally available in the palette." },
+
     /* (extend here as the shipped pack / UI grows -- one row per custom #str_ id.) */
 };
 

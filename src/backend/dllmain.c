@@ -23,7 +23,7 @@
 #include "hook.h"
 #include "smoke.h"
 #include "rawmap.h"
-#include "rawmap.h"
+#include "palette_guard.h"
 #include "strids.h"
 #include "overrides.h"
 #include "commands.h"
@@ -201,6 +201,21 @@ static DWORD WINAPI bootstrap_thread(LPVOID p)
         }
         sh_rawmap_save_install(serialize, serialize_clean);
 
+        /* the RELOAD-crash GUARD (palette_guard.c). After a heavy edit session (repeated create/delete of logic
+         * entities), one entry in the editor's entity palette is left with a freed name string. On the next full
+         * map-load the palette is sorted by name at entry, and copying that entry during the sort dereferences the
+         * freed pointer -> access violation (fault region 0x19fca40). The map loads clean first, then the post-load
+         * sort detonates -- a use-after-free, not a bad deserialize. The guard detours the palette-migration entry
+         * (0x5ec6c0) and resets any dangling palette name string to empty BEFORE the sort copies it, so a clean
+         * empty string is copied instead of the freed one. A valid entry is untouched; nothing is freed (the stale
+         * buffer is simply never read). No editor/sig dependency (recipe-tagged RVA off the module base). See
+         * palette_guard.c. */
+        /* TEMP-DISABLED (shield-off diagnostic 2026-07-05): the render-node guard is one of OUR injected detours
+         * and it WRITES into the render-node array -- disabled here to prove our own code isn't the corruptor.
+         * RE-ENABLE by uncommenting. */
+        /* sh_palette_guard_install(g_doom_base); */
+        backend_log("rendernode-guard: TEMP-DISABLED (shield-off diagnostic build)");
+
         void *get_decls = (void *)sig_addr_by_name(results, db, "GetDeclsOfType");
         /* GetDeclsOfType is resolved here and handed to the command layer below (sh_commands_install),
          * where sh_listres + the material-lookup handlers walk the typed decl-manager node it returns.
@@ -332,6 +347,10 @@ static DWORD WINAPI bootstrap_thread(LPVOID p)
      * sigs resolve on DECRYPTED .text. Was a separate winmm.dll proxy that DOOM's loader rejected at
      * load; rides the backend's PROVEN XINPUT1_3 load now. The sanctioned divergence
      * (recover-in-place vs OG's TerminateProcess). Blocks briefly on the instrumentation-coexistence wait. */
+    /* RE-ENABLED 2026-07-05 after the shield-off diagnostic PROVED the fault-shield innocent (the create-timeline AV
+     * 0xd32a39 fired identically with the shield off -> the engine's own crash dialog = the "freeze"). The real root
+     * (a reclassed node-less timeline keeping the pasted command's stale render-node +0x70) is now fixed at the source
+     * in ae_apply_one. The shield stays as the normal recover-in-place safety net. */
     shield_install(g_doom_base, g_doom_size);
 
     return 0;

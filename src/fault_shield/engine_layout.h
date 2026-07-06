@@ -108,6 +108,9 @@
 #define RVA_VIS_LEAF_LO       0xD32A30u   /* visibility-predicate leaf FUN_140d32a30 (the live AV site; recipe-tagged) */
 #define VIS_LEAF_SPAN         0x27u       /* RE-DERIVE: 0xD32A57 - 0xD32A30 (the frameless-leaf body length) */
 #define RVA_VIS_LEAF_HI       (RVA_VIS_LEAF_LO + VIS_LEAF_SPAN)          /* ...body end (frameless leaf) */
+#define RVA_VIS_LEAF_FALSE    0xD32A54u   /* the leaf's own "XOR AL,AL; RET" tail = return FALSE (no valid
+                                           * connection). Redirect a faulting deref here to skip the bad node.
+                                           * RE-DERIVE: disasm FUN_140d32a30 -> the final XOR AL,AL;RET RVA. */
 
 /* In-shield REVERT of the corrupt connection (so the resolver stops re-faulting + the editor draw resumes
  * fully). DIRECT, disasm of resolver 0x5E0AD0: the visibility leaf 0xD32A30 is frameless, so at the

@@ -73,7 +73,8 @@ enum ShUiIndex {
     SH_UI_widget                        = 0x1b,
     SH_UI_gridLayout_3                  = 0x1c,
     SH_UI_timeline_list                 = 0x1d,
-    SH_UI_button_create_new_timeline    = 0x1e,
+    /* 0x1e was SH_UI_button_create_new_timeline -- removed (no clone-side create-timeline; place from the
+     * in-game palette instead). Slot left unused so the later explicit indices stay put. */
     /* Tab 5 -- Timeline Editor */
     SH_UI_tab_8                         = 0x1f,
     SH_UI_gridLayout_4                  = 0x20,
@@ -165,11 +166,9 @@ struct ShWinController {
                                           * valid_count -> the count/valid triggers miss it and the list stays stale
                                           * until a manual Refresh. A change in this hash forces a rebuild so live
                                           * game interaction (moves between modules, module add/remove) is reflected. */
-    int           spawn_rebuild_frames = 0; /* QOL: a from-scratch timeline SPAWN places the entity on the game
-                                          * thread (deferred) + its className resolves a beat later, so the
-                                          * one-shot count-poll can rebuild before the new entity reads as a
-                                          * timeline. Set >0 on a spawn -> the dispatch re-scans a few times over
-                                          * ~1.5s so the new timeline self-appears in the Timelines list. */
+    /* (spawn_rebuild_frames + pending_timeline_morph removed with the from-scratch timeline SPAWN path: create is
+     * now MORPH-ONLY, and a morph reclasses an already-placed entity, so the last_world_sig hash above rebuilds the
+     * Timelines list on its own -- no spawn ticker + no post-spawn morph tick.) */
     int           last_wire_gen = -1;    /* QOL: the wire-any connect-edit generation last seen (iface +0x288,
                                           * bumped by the backend on each sh_target_any wire connect edit). A
                                           * wire connect nets NO entity_count change, so the count-poll above

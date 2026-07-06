@@ -143,8 +143,6 @@ static void sh_retranslateUi(QMainWindow *window, ShWinController *win)
     tabs->setTabText(tabs->indexOf(static_cast<QWidget *>(UIGET(SH_UI_tab_4))),
                      QApplication::translate(SH_CTX, "Prefabs"));
 
-    static_cast<QPushButton *>(UIGET(SH_UI_button_create_new_timeline))
-        ->setText(QApplication::translate(SH_CTX, "Create New Timeline"));
     tabs->setTabText(tabs->indexOf(static_cast<QWidget *>(UIGET(SH_UI_widget))),
                      QApplication::translate(SH_CTX, "Timelines"));
 
@@ -304,12 +302,10 @@ static void sh_wire_stub_handlers(ShWinController *win)
     /* Timeline Editor: insert_entity_event.clicked -> append an empty event-row (FUN_180011e9c). */
     QObject::connect(static_cast<QPushButton *>(UIGET(SH_UI_insert_entity_event)),
                      &QPushButton::clicked, [win]() { sh_timeline_insert_event(win); });
-    /* Timelines: button_create_new_timeline.clicked -> sh_timeline_create_new (clone EXCEEDS OG). The OG button is
-     * UNWIRED (no slot at all -- create-timeline-re); the clone implements it as a real feature: morph the selected
-     * entity into a timeline host, or spawn a fresh one grabbed at the camera. The button grays out when not tabbed
-     * inside a module (sh_dispatch_flagword polls iface +0x1c0 is_entity_mode). */
-    QObject::connect(static_cast<QPushButton *>(UIGET(SH_UI_button_create_new_timeline)),
-                     &QPushButton::clicked, [win]() { sh_timeline_create_new(win); });
+    /* (No "Create New Timeline" button: the clone cannot fabricate a timeline entity outside the engine's own
+     * creation path -- both a from-scratch spawn and a reclass-a-selected-entity morph corrupted the map. A
+     * timeline is created by PLACING one from the in-game SnapMap entity palette instead; the Timeline Editor
+     * here only authors events on an already-placed, engine-validated timeline.) */
 
     /* (prefab-list populate removed -- the Prefabs tab is a "Coming soon" stub, no list to fill.) */
 }
@@ -537,18 +533,12 @@ void sh_setupUi(QMainWindow *window, ShWinController *win)
     line_edit_timeline_filter->setObjectName(QStringLiteral("line_edit_timeline_filter"));
     line_edit_timeline_filter->setPlaceholderText(QApplication::translate(SH_CTX, "Search timelines..."));
     UISET(SH_UI_line_edit_timeline_filter, line_edit_timeline_filter);
-    gridLayout_3->addWidget(line_edit_timeline_filter, 1, 0, 1, 1);
+    gridLayout_3->addWidget(line_edit_timeline_filter, 0, 0, 1, 1);
 
     QListWidget *timeline_list = new QListWidget(widget);
     timeline_list->setObjectName(QStringLiteral("timeline_list"));
     UISET(SH_UI_timeline_list, timeline_list);
-    gridLayout_3->addWidget(timeline_list, 2, 0, 1, 1);
-
-    QPushButton *button_create_new_timeline = new QPushButton(widget);
-    button_create_new_timeline->setObjectName(QStringLiteral("button_create_new_timeline"));
-    button_create_new_timeline->setMaximumSize(QSize(110, SH_QWIDGETSIZE_MAX));
-    UISET(SH_UI_button_create_new_timeline, button_create_new_timeline);
-    gridLayout_3->addWidget(button_create_new_timeline, 0, 0, 1, 1);
+    gridLayout_3->addWidget(timeline_list, 1, 0, 1, 1);
 
     tabWidget->addTab(widget, QString());
 
