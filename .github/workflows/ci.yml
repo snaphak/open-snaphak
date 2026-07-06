@@ -87,11 +87,21 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Install Qt 5.9.9
-        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+      # Qt via aqt (a pip package, not a GitHub Action) so no UNPINNED transitive action is pulled in --
+      # jurplel/install-qt-action internally uses setup-python@v6 + install-qt-action/action@v4 by tag, which
+      # the repo's "require SHA-pinned actions" policy rejects. setup-python is a single JS action (no
+      # transitive uses:), so pinning it to a SHA is policy-clean.
+      - name: Set up Python (for aqt)
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          version: '5.9.9'
-          arch: win64_msvc2017_64
+          python-version: '3.12'
+      - name: Install Qt 5.9.9
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --upgrade pip aqtinstall
+          aqt install-qt windows desktop 5.9.9 win64_msvc2017_64 -O "${{ github.workspace }}\Qt"
+          "QT_ROOT_DIR=${{ github.workspace }}\Qt\5.9.9\msvc2017_64" >> $env:GITHUB_ENV
       - name: Install Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
