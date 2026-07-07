@@ -169,9 +169,30 @@ static int scan_json_string(const char **p, char *out, size_t cap)
     return (int)o;
 }
 
-/* Append one #str_<id> -> text row to the live table via the engine fns. */
+/* Dedup within one inject pass: a key must NEVER be appended twice -- duplicate keys corrupt the engine's
+ * sorted-by-hash string dictionary (lookups collapse -> wrong/missing strings). FIRST-writer-wins: do_inject
+ * injects the user's strids.json FIRST and the baked defaults second, so for a key the user defines their
+ * value WINS and the baked duplicate is skipped (a user's explicit override beats our default, matching the
+ * decl file-shadow). Case-insensitive (the engine lowercases the #str_ hash). */
+#define STRIDS_DEDUP_CAP 512
+static char g_injected_ids[STRIDS_DEDUP_CAP][96];
+static int  g_injected_n;
+
+static int already_injected(const char *id)
+{
+    for (int i = 0; i < g_injected_n; i++)
+        if (_stricmp(g_injected_ids[i], id) == 0) return 1;
+    return 0;
+}
+
+/* Append one #str_<id> -> text row to the live table via the engine fns. Skips a key already injected
+ * this pass (baked-wins dedup). */
 static void inject_row(const char *id, const char *text, size_t text_len)
 {
+    if (already_injected(id)) return;                       /* first-writer-wins dedup: never append twice */
+    if (g_injected_n < STRIDS_DEDUP_CAP)
+        strncpy_s(g_injected_ids[g_injected_n++], sizeof g_injected_ids[0], id, _TRUNCATE);
+
     char key[256];
     _snprintf_s(key, sizeof key, _TRUNCATE, "#str_%s", id);
 
@@ -196,41 +217,43 @@ static long do_inject(void)
     if (g_table_desc == NULL || g_insert == NULL || g_hash == NULL || g_idstr_ctor == NULL)
         return 0;
 
-    /* (1) BAKED rows: compiled into the DLL (strids_baked.h) and injected UNCONDITIONALLY, so the
-     * shipped override pack's custom #str_ strings (palette categories, display names) ALWAYS resolve --
-     * independent of the fragile %USERPROFILE%\snaphak\strings\strids.json. */
+    g_injected_n = 0;   /* fresh dedup set for this inject pass */
+
+    /* (1) USER rows FIRST -- the user's strings\strids.json is their EXPLICIT override layer, so it WINS
+     * (same precedent as the decl file-shadow: a user's own file beats our baked default). A key the user
+     * defines is injected + recorded here; the baked default for that key is then SKIPPED in (2). */
+    size_t len = 0;
+    char *buf = read_source_file(&len);
+    if (buf != NULL) {
+        const char *p = buf;
+        char id[256], text[4096];
+        /* Walk "key" : "value" pairs. Anything that isn't a well-formed quoted string is skipped over a
+         * char at a time, so braces/commas/whitespace/comments don't trip the scan. */
+        while (*p) {
+            if (*p != '"') { p++; continue; }
+            int idlen = scan_json_string(&p, id, sizeof id);
+            if (idlen < 0) { p++; continue; }
+            /* expect a ':' (skip ws) then the value string */
+            while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+            if (*p != ':') continue;     /* not a key:value pair -- resume scanning from here */
+            p++;
+            while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+            if (*p != '"') continue;
+            int vlen = scan_json_string(&p, text, sizeof text);
+            if (vlen < 0) continue;
+            if (idlen > 0) inject_row(id, text, (size_t)vlen);
+        }
+        HeapFree(GetProcessHeap(), 0, buf);
+    } else {
+        backend_log("B1: strids -- no user strids.json (optional); baked defaults cover the shipped pack");
+    }
+
+    /* (2) BAKED defaults: fill every shipped key the user did NOT override (the dedup skips a key the json
+     * already injected in (1)), so the "*Custom" tab + Timeline/Unknown strings ALWAYS resolve -- including
+     * on a clean setup with no strids.json. */
     for (size_t bi = 0; bi < B1_STRIDS_BAKED_COUNT; bi++)
         inject_row(g_strids_baked[bi].id, g_strids_baked[bi].text, strlen(g_strids_baked[bi].text));
 
-    /* (2) USER rows: an OPTIONAL add/override layer from the user's strings\strids.json. Its absence is
-     * no longer a failure -- the baked set above already covers the shipped pack. */
-    size_t len = 0;
-    char *buf = read_source_file(&len);
-    if (buf == NULL) {
-        backend_log("B1: strids -- baked set injected; no user strids.json (optional)");
-        return (long)InterlockedCompareExchange(&g_inject_count, 0, 0);
-    }
-
-    const char *p = buf;
-    char id[256], text[4096];
-    /* Walk "key" : "value" pairs. Anything that isn't a well-formed quoted string is skipped over a
-     * char at a time, so braces/commas/whitespace/comments don't trip the scan. */
-    while (*p) {
-        if (*p != '"') { p++; continue; }
-        int idlen = scan_json_string(&p, id, sizeof id);
-        if (idlen < 0) { p++; continue; }
-        /* expect a ':' (skip ws) then the value string */
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-        if (*p != ':') continue;     /* not a key:value pair -- resume scanning from here */
-        p++;
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
-        if (*p != '"') continue;
-        int vlen = scan_json_string(&p, text, sizeof text);
-        if (vlen < 0) continue;
-        if (idlen > 0) inject_row(id, text, (size_t)vlen);
-    }
-
-    HeapFree(GetProcessHeap(), 0, buf);
     return (long)InterlockedCompareExchange(&g_inject_count, 0, 0);
 }
 
