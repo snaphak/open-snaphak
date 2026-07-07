@@ -6,6 +6,29 @@ where our own reimplementation was wrong, not the original SnapHak's behavior; a
 (or faithful reproduction of) the *original's* behavior belongs in [`fidelity.md`](fidelity.md)
 instead. Entries are chronological, newest first.
 
+## 2026-07-06 — `apply_engine.c`: `APPLY_TEXT_CAP` silently truncated large prefabs on Load/Place
+
+Once Load/Place (staging via `kind=1`/mkcmd) was wired up and exercised against real prefab files,
+some staged cleanly and some silently failed (backend log: `applied 0/1`, no crash, no fault-shield
+entry -- nothing visibly wrong, the prefab just never showed up in the paste slot).
+
+Root cause: `APPLY_TEXT_CAP` (a sanity ceiling on the JSON text carried in a scheduled apply item) was
+`256 * 1024` -- sized for small per-entity edits, the only thing this pipeline used to carry. Real
+prefab files can run well past that. `slot_schedule_apply`'s batch deep-copy silently truncated
+anything over the cap with no error at all, so an oversized prefab got cut off mid-JSON before it ever
+reached the deserializer, which then failed to lex the truncated text.
+
+Diagnosed with a step-by-step trace added to `ae_deserialize_to_obj` (gated behind `AE_DESER_DIAG_ON`,
+mirroring the existing `AE_SER_DIAG` pattern on the serialize side) -- it pinpointed the exact failing
+prefab's text arriving already truncated to one byte under the old cap, confirming the truncation
+happened upstream in scheduling, not in the deserialize call itself.
+
+**Fix:** raised `APPLY_TEXT_CAP` to 4 MB, matching the scratch buffer already used elsewhere for
+prefab content. Retested against every prefab that had been failing (all `applied 1/1` now) and
+live-tested up to 2 MB with no issue -- comfortable headroom over anything hit so far. This cap is also
+used as a sanity bound when reading a serialized result back out (`ae_read_idstr`), so raising it
+benefits the Create-from-selection direction too, not just Load/Place.
+
 ## 2026-07-06 — `apply_engine.c`: prefab create-from-selection crashes
 
 Two independent bugs, both in the `+0xb0` serialize-selection path (`slot_serialize_selection`),

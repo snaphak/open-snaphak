@@ -141,7 +141,16 @@
 
 /* command-buffer routing (FIX B). */
 #define CLONE_BSS_CMD          "clone_bss_apply"
-#define APPLY_TEXT_CAP         (256 * 1024) /* max patched-entity JSON we accept per item (sanity) */
+#define APPLY_TEXT_CAP         (4 * 1024 * 1024) /* max JSON we accept per item (sanity). Was 256 KB --
+                                            * CONFIRMED (2026-07-06) too small: real prefab files can run
+                                            * well past that (see poc_apply_create_prefab's own 4 MB
+                                            * scratch buffer comment), and slot_schedule_apply's deep-copy
+                                            * silently truncated anything over this cap with no error at
+                                            * all -- Load/Place staging a large prefab got cut mid-JSON,
+                                            * which then failed to lex ("applied 0/1", no crash, no
+                                            * fault-shield entry -- just silently wrong). Bumped to match
+                                            * the 4 MB scratch buffer already used elsewhere for prefab
+                                            * content; live-tested up to 2 MB without issue. */
 #define APPLY_MAX_ITEMS        4096         /* sanity cap on a scheduled batch */
 
 /* ============================================================ fine-grained serialize DIAGNOSTIC ====
@@ -157,6 +166,22 @@
     _snprintf_s(_ld, sizeof _ld, _TRUNCATE, __VA_ARGS__); backend_log(_ld); } while (0)
 #else
 #define AE_SER_DIAG(...) do { } while (0)
+#endif
+
+/* same idea, deserialize side -- Load/Place (2026-07-06) showed certain larger/more complex real prefab
+ * files silently fail to stage (backend log: "applied 0/1") while simple ones succeed, with no
+ * fault-shield entry at all. RESOLVED (2026-07-06): this diagnostic pinpointed it immediately -- "text
+ * len=262143" (one byte under the old 256 KB APPLY_TEXT_CAP), i.e. slot_schedule_apply's deep-copy was
+ * silently truncating anything over that cap before ae_deserialize_to_obj ever saw it, so the Lexer
+ * failed on the cut-off JSON. Fixed by raising APPLY_TEXT_CAP to 4 MB; retested against the prefabs that
+ * were failing (all "applied 1/1" now) and live-tested up to 2 MB with no issue. Gated back off; flip to
+ * 1 again if a similar silent-failure shows up. */
+#define AE_DESER_DIAG_ON  0
+#if AE_DESER_DIAG_ON
+#define AE_DESER_DIAG(...) do { char _ld[256]; \
+    _snprintf_s(_ld, sizeof _ld, _TRUNCATE, __VA_ARGS__); backend_log(_ld); } while (0)
+#else
+#define AE_DESER_DIAG(...) do { } while (0)
 #endif
 
 /* ============================================================ engine fn typedefs (sig-resolved) ===== */
@@ -432,9 +457,17 @@ static int ae_serialize_to_json(const char *typeName, void *cloneBase, char *out
  * SSO lexer). Returns 1 on a successful lex+deserialize. SEH-guarded; any gap -> 0 (no crash). */
 static int ae_deserialize_to_obj(const char *text, void *dstObj, const char *typeName)
 {
-    if (!ae_deserialize_bound() || !text || !dstObj) return 0;
+    if (!ae_deserialize_bound() || !text || !dstObj) {
+        AE_DESER_DIAG("deser[%s]: bail early -- bound=%d text=%p dstObj=%p",
+                      typeName ? typeName : "?", ae_deserialize_bound(), (void *)text, dstObj);
+        return 0;
+    }
     void *reflect = ae_get_reflect();
-    if (!reflect) return 0;
+    if (!reflect) {
+        AE_DESER_DIAG("deser[%s]: reflect NULL (declMgr/vtable+0x80 unresolved)", typeName ? typeName : "?");
+        return 0;
+    }
+    AE_DESER_DIAG("deser[%s]: start, text len=%zu", typeName ? typeName : "?", strlen(text));
 
     uint8_t node7[PARSE_NODE_SIZE];
     uint8_t lexer[LEXER_SIZE];
@@ -450,7 +483,9 @@ static int ae_deserialize_to_obj(const char *text, void *dstObj, const char *typ
         g_idstr_ctor(srcStr, text);     src_ctored = 1;    /* src idStr from the C string */
 
         /* 0x1a5cd90(lexer, src, parseNode, 1) -> success char. */
+        AE_DESER_DIAG("deser[%s]: about to call Lexer", typeName ? typeName : "?");
         char lexed = g_lexer(lexer, srcStr, parseNode, 1);
+        AE_DESER_DIAG("deser[%s]: Lexer returned %d", typeName ? typeName : "?", (int)(lexed & 0xff));
         if (lexed & 0xff) {
             /* arg5 for StructDeserialize: header 8 bytes, node@+0x08 -- DIRECT FUN_141a1d450 reads
              * {*param_5, param_5[1], param_5[2]} then FUN_141a41100(.., param_5+8). This is CORRECT for
@@ -461,12 +496,16 @@ static int ae_deserialize_to_obj(const char *text, void *dstObj, const char *typ
             *(uint16_t *)(arg5) = 1;
             memcpy(arg5 + 8, node7, PARSE_NODE_SIZE);
             /* 0x1a1d450(reflect, typeName, dstObj, parseNode, arg5, 0) -- SIX args. */
+            AE_DESER_DIAG("deser[%s]: about to call StructDeserialize dstObj=%p", typeName ? typeName : "?", dstObj);
             g_deser(reflect, typeName, dstObj, parseNode, arg5, NULL);
+            AE_DESER_DIAG("deser[%s]: StructDeserialize returned (no crash)", typeName ? typeName : "?");
             ok = 1;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         ok = 0;
+        AE_DESER_DIAG("deser[%s]: SEH fault in deserialize body", typeName ? typeName : "?");
     }
+    AE_DESER_DIAG("deser[%s]: ok=%d", typeName ? typeName : "?", ok);
 
     /* FIX A teardown, faithful order. The idStr dtor is SSO/heap-flag-guarded (no-op when never grown). */
     if (src_ctored)   { __try { g_idstr_dtor(srcStr); }                 __except (EXCEPTION_EXECUTE_HANDLER) {} }
