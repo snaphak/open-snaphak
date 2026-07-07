@@ -85,6 +85,13 @@ static volatile bool g_pending_rename_prefab = false;
 static std::string   g_rename_prefab_old, g_rename_prefab_new, g_rename_prefab_folder;
 static int           g_rename_result = 0;        /* 1 ok; 0 MoveFile failed (dest exists/missing/locked); -1 resolve failed */
 
+static volatile bool g_pending_load_prefab = false;
+static std::string   g_load_prefab_name, g_load_prefab_folder;
+static int           g_load_result = 0;          /* 1 staged ok (now press Ctrl+V in the 3D view to place it);
+                                                   * 0/-1 resolve/read/schedule failure (see log). Deliberately
+                                                   * stage-only -- see backend-changes.md for why we don't try to
+                                                   * automate the paste keystroke ourselves. */
+
 /* Folders: one real level of subdirectories under %USERPROFILE%\snaphak\prefabs\ (no nested-within-nested).
  * folder="" always means the root prefabs\ dir. The folder/file IS the truth -- no separate manifest. */
 static volatile bool g_pending_create_folder = false;
@@ -516,6 +523,52 @@ static void poc_apply_rename_prefab()
     if (!poc_prefab_file_path(g_rename_prefab_folder, g_rename_prefab_new, newp, (int)sizeof newp)) return;
     g_rename_result = MoveFileA(oldp, newp) ? 1 : 0;
 }
+/* Load/Place: read the prefab file's raw JSON off disk, clear the current editor selection FIRST (so
+ * nothing else is selected once the user pastes it), then schedule a kind=1 (mkcmd) apply item to stage
+ * it into editor+0x209a8. Deliberately stage-only -- we tried automating the follow-up paste keystroke
+ * (direct PasteInstantiate call, then a synthesized Ctrl+V) and both had real side effects (a crash, then
+ * a spurious ESC-menu popup from the OS-level focus switch); see backend-changes.md. The user presses
+ * Ctrl+V themselves in the 3D view to actually place it, matching the original SnapHak's own workflow
+ * (confirmed via decompiling the original snaphakui.dll/XINPUT1_3.dll -- neither of them automates this
+ * step either). result: 1 staged, 0/-1 resolve/read/schedule failure (see backend log). */
+/* __try can't share a function with a C++ object needing unwinding (/EHsc, C2712) -- these leaves have
+ * only PODs in scope, so the SEH guards around the engine calls are safe here. */
+static void poc_clear_selection_seh()
+{
+    if (g_iface && g_iface->vtbl && g_iface->vtbl->clear_selection) {
+        __try { g_iface->vtbl->clear_selection(g_iface); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+static int poc_apply_edit_seh(const sh_apply_item *it, int count, const char *op)
+{
+    __try { return g_iface->vtbl->apply_edit(g_iface, it, count, op) ? 1 : 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+static void poc_apply_load_prefab()
+{
+    g_load_result = -1;
+    if (g_load_prefab_name.empty()) return;
+    if (!g_iface || !g_iface->vtbl || !g_iface->vtbl->apply_edit) { poc_log("load-prefab: ABORT (iface/slot missing)"); return; }
+    char path[1024];
+    if (!poc_prefab_file_path(g_load_prefab_folder, g_load_prefab_name, path, (int)sizeof path)) {
+        poc_log("load-prefab: ABORT (resolve_prefab_path failed)");
+        return;
+    }
+    FILE *fp = nullptr;
+    if (fopen_s(&fp, path, "rb") != 0 || !fp) { poc_log("load-prefab: ABORT (fopen failed)"); return; }
+    fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
+    std::string body;
+    if (sz > 0) { body.resize((size_t)sz); size_t got = fread(&body[0], 1, (size_t)sz, fp); body.resize(got); }
+    fclose(fp);
+    if (body.empty()) { poc_log("load-prefab: ABORT (empty file)"); return; }
+
+    poc_clear_selection_seh();
+
+    sh_apply_item it; it.kind = 1; it.id = 0; it.text = body.c_str();
+    g_load_result = poc_apply_edit_seh(&it, 1, "load-prefab");
+    char l[300]; _snprintf_s(l, sizeof l, _TRUNCATE, "load-prefab: name='%s' staged=%d", g_load_prefab_name.c_str(), g_load_result);
+    poc_log(l);
+}
 /* Move a prefab from one folder to another (drag-and-drop target): MoveFileA across the two resolved
  * paths. Refuses to overwrite an existing same-named file at the destination (JS pre-checks too). */
 static void poc_apply_move_prefab()
@@ -844,6 +897,10 @@ static HRESULT on_message(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventA
                 std::wstring nm, fo; json_get_wstr(json, L"name", nm); json_get_wstr(json, L"folder", fo);
                 g_delete_prefab_name = w_to_utf8(nm); g_delete_prefab_folder = w_to_utf8(fo);
                 g_pending_delete_prefab = true;
+            } else if (cmd == L"loadPrefab") {
+                std::wstring nm, fo; json_get_wstr(json, L"name", nm); json_get_wstr(json, L"folder", fo);
+                g_load_prefab_name = w_to_utf8(nm); g_load_prefab_folder = w_to_utf8(fo);
+                g_pending_load_prefab = true;
             } else if (cmd == L"renamePrefab") {
                 std::wstring o, nn, fo; json_get_wstr(json, L"oldName", o); json_get_wstr(json, L"newName", nn); json_get_wstr(json, L"folder", fo);
                 g_rename_prefab_old = w_to_utf8(o); g_rename_prefab_new = w_to_utf8(nn); g_rename_prefab_folder = w_to_utf8(fo);
@@ -980,7 +1037,7 @@ static void poc_think_loop()
     for (;;) {
         frame++;
         bool did_save = false, did_delete = false, did_create_prefab = false;
-        bool did_delete_prefab = false, did_rename_prefab = false;
+        bool did_delete_prefab = false, did_rename_prefab = false, did_load_prefab = false;
         bool did_create_folder = false, did_rename_folder = false, did_delete_folder = false, did_move_prefab = false;
         EnterCriticalSection(&g_loop->mtx);
         if (g_iface && g_iface->vtbl && g_iface->vtbl->drain_work_queue) g_iface->vtbl->drain_work_queue(g_iface);
@@ -1005,6 +1062,7 @@ static void poc_think_loop()
         }
         if (g_pending_delete_prefab) { poc_apply_delete_prefab(); g_pending_delete_prefab = false; did_delete_prefab = true; }
         if (g_pending_rename_prefab) { poc_apply_rename_prefab(); g_pending_rename_prefab = false; did_rename_prefab = true; }
+        if (g_pending_load_prefab)   { poc_apply_load_prefab();   g_pending_load_prefab = false;   did_load_prefab = true; }
         if (g_pending_create_folder) { poc_apply_create_folder(); g_pending_create_folder = false; did_create_folder = true; }
         if (g_pending_rename_folder) { poc_apply_rename_folder(); g_pending_rename_folder = false; did_rename_folder = true; }
         if (g_pending_delete_folder) { poc_apply_delete_folder(); g_pending_delete_folder = false; did_delete_folder = true; }
@@ -1038,6 +1096,11 @@ static void poc_think_loop()
             m += L"\",\"newName\":\""; m += poc_json_w(g_rename_prefab_new.c_str()); m += L"\"}";
             poc_post_json(m.c_str());
             if (g_rename_result == 1) poc_send_prefabs();
+        }
+        if (did_load_prefab) {
+            std::wstring m = L"{\"kind\":\"loadPrefabResult\",\"result\":"; m += std::to_wstring(g_load_result);
+            m += L",\"name\":\""; m += poc_json_w(g_load_prefab_name.c_str()); m += L"\"}";
+            poc_post_json(m.c_str());
         }
         if (did_create_folder) {
             std::wstring m = L"{\"kind\":\"createFolderResult\",\"result\":"; m += std::to_wstring(g_create_folder_result);

@@ -182,13 +182,15 @@ typedef int          (*sh_serialize_entity_fn)(struct sh_iface *self, int id, ch
 
 /* A scheduled apply work-item the backend stashes + drains at the clone_bss_apply command-exec point.
  *   kind     : 0=bulkset/bse (deserialize patched_text -> temp def -> commit class/inherit/source on the
- *              live entity `id`); 1=mkcmd (deserialize prefab_text as idSnapEntityPrefab -> editor+0x209a8).
+ *              live entity `id`); 1=mkcmd (deserialize prefab_text as idSnapEntityPrefab -> editor+0x209a8
+ *              -- also used by the Prefabs tab's Load/Place, which just stages and prompts the user to
+ *              paste manually with a real Ctrl+V, matching the original's own actual workflow).
  *   id       : the live entity id the patched_text applies to (kind 0). Ignored for mkcmd (kind 1).
  *   text     : the FULL patched entity JSON (kind 0) or the full prefab JSON (kind 1). Backend-copied.
  * The frontend builds these (one per id for the scalar/list ops; one for mkcmd) and hands a batch to
  * sh_schedule_apply, which copies them, registers clone_bss_apply once, and BufferCommandTexts it. */
 typedef struct sh_apply_item {
-    int         kind;       /* 0 = deserialize-and-commit on `id`; 1 = mkcmd prefab paste */
+    int         kind;       /* 0 = deserialize-and-commit on `id`; 1 = mkcmd prefab paste (also Load/Place) */
     int         id;         /* the target live entity id (kind 0) */
     const char *text;       /* the patched entity JSON (kind 0) / prefab JSON (kind 1) */
 } sh_apply_item;

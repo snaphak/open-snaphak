@@ -116,8 +116,18 @@ dispatch, which keeps them off the re-entrant callback and on the main-thread ex
     to the root list, then removes the now-empty directory). Folders render above root-level items.
   - Filter/search box narrows the list client-side over the last real fetch (same pattern as the Entities
     tab's filter); folders with zero matches are hidden while filtering, with a "No matches." empty state.
-  - "Create from selection" works end-to-end (see Known limitations for a remaining intermittent edge
-    case). "Load / Place" is still a "coming soon" toast -- not yet implemented.
+  - "Create from selection" works end-to-end. "Load / Place" reads the prefab file's raw JSON, clears the
+    current editor selection, and stages it into `editor+0x209a8` (a plain `kind=1`/mkcmd apply item,
+    identical to the pre-existing Qt `mkcmd` path) -- then prompts the user to press Ctrl+V themselves in
+    the 3D view to actually place it. This is deliberately stage-only, matching the *original* SnapHak's
+    own workflow exactly (confirmed by decompiling `snaphakui.dll`/`XINPUT1_3.dll` -- a prefab
+    double-click there only ever stages, never auto-places either). Two earlier attempts at automating
+    the placement step (calling `PasteInstantiate` directly, then synthesizing a native Ctrl+V ourselves)
+    each surfaced a different real side effect -- see [`backend-changes.md`](backend-changes.md) for the
+    full story. Available from both the "Load / Place" button and the prefab list's right-click menu. The
+    generic engine "SnapStack: ..." toast is suppressed for this op specifically (`ae_toast_result` skips
+    it for `op == "load-prefab"`) since the webview's own toast already tells the user what to do next;
+    the Qt `mkcmd` command still gets the engine toast, since it has no toast of its own.
   - Live "Create from selection (N)" button count and the create modal's "From N selected entities" text
     both track the real editor selection continuously (two separate display bugs fixed: the count used to
     silently cap at 64 regardless of the real selection size, and the modal text never updated at all --
@@ -134,11 +144,16 @@ dispatch, which keeps them off the re-entrant callback and on the main-thread ex
   hovered-id slot (+0x198) up front before attempting create, so it can show an accurate "hover over an
   entity first" result instead of the old misleading "nothing selected" toast or a crash -- the Create modal
   also has an inline tip to that effect.
-- **Load / Place is a separate, simpler gap: not yet implemented (not a crash).** The plan is `apply_edit`
-  kind=2 (stage into the paste slot, `PasteInstantiate`, enter grab mode) mirroring the working
-  Timeline-spawn precedent, plus an auto-`clear_selection` first so nothing else is selected when the
-  placed prefab lands. Delete/Rename/Folders are unaffected by any of the above -- they're pure Win32 file
-  ops through `resolve_prefab_path` (+0xc0) only, no `serialize_selection` or `populate()` involved.
+- **Load / Place: WIRED (2026-07-06), stage-only.** `apply_edit` kind=1 (the same mkcmd path as the Qt
+  frontend) stages the prefab into the paste slot, plus an auto-`clear_selection` first; the user presses
+  Ctrl+V themselves to place it. Two attempts at automating that last step (a direct `PasteInstantiate`
+  call, then a synthesized native Ctrl+V) each surfaced a different real side effect in DOOM -- a crash on
+  the next Play/Editor transition, then an unwanted ESC-menu popup from the OS-level focus switch. Given
+  three different failure modes across three attempts, this is deliberately left as stage-and-prompt
+  rather than continuing to chase automation; see [`backend-changes.md`](backend-changes.md) for the full
+  story. Delete/Rename/Folders are unaffected by any of the prefab crash history -- they're pure Win32
+  file ops through `resolve_prefab_path` (+0xc0) only, no `serialize_selection` or `populate()`
+  involved.
 - **Timelines / Timeline Editor** tab is not ported (the Qt frontend has it, and per `sh_timeline.cpp` even
   the OG Qt behavior has a faithfully-reproduced "Create New Timeline" brokenness). Deferred.
 - **Push to stack 0** is a stub: the SnapStack subsystem (`snapstack.cpp`) is Qt-bound and its consuming

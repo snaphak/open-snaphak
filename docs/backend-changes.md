@@ -60,3 +60,72 @@ genuinely requires hovering a selected entity in the 3D view — see
 a clone bug. The webview UI now checks the hovered-id slot (`+0x198`) up front (see
 [`webview-ui.md`](webview-ui.md)) instead of relying on the engine's status code, so it can show an
 accurate message instead of a generic "nothing selected" one.
+
+## 2026-07-06 — `apply_engine.c`: Load/Place, calling `PasteInstantiate` directly was wrong
+
+First implementation of `kind=2` (Load/Place) staged the prefab (`ae_mkcmd_one`, same as `kind=1`)
+then called `PasteInstantiate` (`+0x54f950`) directly, mirroring how `PrefabPopulate`/`PrefabCtor`
+are called elsewhere. This looked reasonable but was wrong in a way the crash didn't immediately
+reveal: the placed entity came out selected but not draggable, and returning to the editor from Play
+afterward crashed DOOM hard (`ACCESS_VIOLATION` reading `0x0` at `+0x5a516b`, a large call stack
+through several engine frames).
+
+Root cause: the engine's real native Ctrl+V handler (`+0xce1810` in `DOOMx64vk.exe`) calls
+`PasteInstantiate`, then calls a *second* function (`+0xcf35e0`) that sets grab-tool state (bit
+manipulation at `obj+0x2d0`/`+0x2d1`, `obj+0x1ac = 4`, `obj+0xbb8 = 1`) on some object passed into the
+handler as its 2nd argument. Calling `PasteInstantiate` alone skips that second call entirely, leaving
+the engine in whatever inconsistent state that omission causes — undraggable placement now, a crash
+on world transition later.
+
+Identifying *which* object needs those writes turned out to be a dead end via live debugging:
+interactive breakpoint-based verification (attach, set a breakpoint, `debugger_continue`, wait for a
+user action to hit it) is **confirmed broken** in this environment — it reliably freezes DOOM's input
+even though the debugger reports the process as running, regardless of what triggers the breakpoint
+(tried 4 times, different breakpoints, different triggers). A static hypothesis (the object is the
+same selection object behind `hovered_id`) didn't hold up against a read-only memory check either —
+the candidate field region held array-like data, not simple flags.
+
+**Fix — sidestep the problem entirely:** confirmed against the *original* `snaphakui.dll` +
+`XINPUT1_3.dll` (static Ghidra decompilation, no live debugging needed) that neither ever calls
+`PasteInstantiate` directly either. A prefab double-click in the original UI
+(`snaphakui.dll!FUN_180017538` → `FUN_180013878`) only reads the file and stores its text; the actual
+"deserialize into `editor+0x209a8`" step is a separate function (`XINPUT1_3.dll!FUN_180006bf0` →
+`FUN_1800094f0`) — the same operation as our own `ae_mkcmd_one`. Placement always happens through a
+real, native Ctrl+V; nothing in either original DLL calls `PasteInstantiate` at all. So `kind=2` no
+longer calls it either — it just stages (`ae_mkcmd_one`, identical to `kind=1`), and something else
+finds the game's own top-level window (`EnumWindows`, same-process, skipping our own
+`"SnapHakStudioWebView"` companion window), brings it to the foreground, and synthesizes a real Ctrl+V
+via `SendInput`, letting the engine's own already-correct native handler do the actual instantiate +
+grab-tool setup, exactly as it would for a real user paste — no need to ever identify the mystery
+object at all.
+
+**First attempt at the synthetic-input step was on the wrong thread.** Put the `SetForegroundWindow` +
+`SendInput` call directly inside `ae_mkcmd_and_place`, which runs on DOOM's own main thread (inside the
+engine's `clone_bss_apply` command-buffer drain). Staging succeeded (confirmed via the toast, "applied
+1/1") but no paste ever happened, even though the user could then paste manually with Ctrl+V — proving
+the staged data was valid the whole time. `SetForegroundWindow` requests a focus change but doesn't
+apply it synchronously; the window that needs it processes the change on its own message pump. Calling
+it from DOOM's main thread and then immediately (same thread, no yield) calling `SendInput` fires
+before that thread ever gets to pump the message that would complete the focus switch — so the
+keystroke landed nowhere. **Fix attempt 2:** moved the whole window-find + focus + `SendInput`
+sequence out of `apply_engine.c` entirely and into the webview UI's own think-loop
+(`poc_synthesize_native_paste` in `snaphak_ui_webview.cpp`), which has its own message pump and isn't
+blocking DOOM's simulation. Also deliberately delayed ~6 loop iterations (~200ms) after a successful
+schedule, plus a 50ms sleep between the focus request and the keystroke, so the engine's command-buffer
+drain has actually staged the prefab, and the focus change has actually landed, before Ctrl+V fires.
+
+**That fix moved the keystroke correctly but surfaced a third side effect.** Staging still succeeded,
+and this time the focus switch itself visibly worked -- but forcing `SetForegroundWindow` on DOOM's
+window made the game pop its own ESC/pause menu, almost certainly a "regained focus after being
+alt-tabbed away" safety behavior (our webview panel is a separate top-level window, so from the game's
+perspective, forcing focus back to it looks exactly like the player alt-tabbing back in). The
+synthesized Ctrl+V then likely lands on that menu instead of the 3D view, so nothing pastes -- but
+again, the staged data is untouched and a manual Ctrl+V still works once the menu is dismissed.
+
+**Decision: stop automating this step.** Three attempts, three different side effects (a hard crash, a
+silent no-op, an unwanted pause menu), and each only surfaced by actually testing in DOOM. Given how
+consistently fragile this specific corner of the engine has been, `kind=2` was removed entirely --
+Load/Place is back to plain `kind=1` (identical to the Qt `mkcmd` path): stage the prefab, then tell the
+user to press Ctrl+V themselves. This matches the *original* SnapHak's own actual workflow exactly (see
+the double-click investigation above) and needs zero window-focus tricks, zero risk of the side effects
+above, and zero remaining need to ever identify the mystery grab-tool object.

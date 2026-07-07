@@ -103,10 +103,19 @@
 #define PREFAB_TEMP_SIZE       0x2000      /* was 0x220 -- confirmed too small, see comment above */
 #define PASTE_INSTANTIATE_RVA  0x54f950u   /* PasteInstantiate FUN_14054f950: void(prefab=editor+0x209a8, editor)
                                             * -- instantiate the staged prefab into the live map + AddToSelection,
-                                            * camera-relative grab placement; does NOT consume the slot. The
-                                            * create-from-scratch timeline SPAWN (kind=2) calls it AFTER staging.
-                                            * sig-resolved ("PasteInstantiate"); this RVA = hook-tolerant fallback.
-                                            * RE'd DIRECT from our own decompile. */
+                                            * camera-relative grab placement; does NOT consume the slot. NOT called
+                                            * by us at all (CONFIRMED 2026-07-06 against the ORIGINAL snaphakui.dll
+                                            * + XINPUT1_3.dll: neither ever calls it -- only the engine's own native
+                                            * Ctrl+V handler does, after a Copy or a prefab double-click just stages
+                                            * the text via the SAME deserialize-into-editor+0x209a8 step our own
+                                            * ae_mkcmd_one already does). Calling it ourselves skipped whatever
+                                            * grab-tool state the native handler also sets up alongside it (left a
+                                            * placed prefab undraggable + crashed on the next Play/Editor
+                                            * transition); a follow-up attempt at synthesizing a native Ctrl+V from
+                                            * our own code hit its own side effects (see backend-changes.md). Load
+                                            * from the Prefabs tab now just stages (kind=1) and prompts the user to
+                                            * paste manually, matching the ORIGINAL's own actual workflow. Kept here
+                                            * for reference RVA only -- not wired to anything. */
 #define ENT_DESHARE_RVA        0x52c920u   /* FUN_14052c920(&array[id]) -- COW make-unique: de-share an entity's 0x6f8
                                             * block before an in-place edit (the engine's UNIVERSAL edit discipline).
                                             * RE-DERIVE per build: if *(int*)*slot != 1 -> operator_new(0x6f8) + deep-copy
@@ -691,6 +700,7 @@ static int ae_mkcmd_one(const char *prefab_text)
 }
 
 
+
 /* ============================================================ the clone_bss_apply command (FIX B) ===
  * The engine drains this on the DOOM main thread at ExecuteCommandBuffer (the decl-safe exec point). It
  * consumes the pending batch the frontend stashed, runs the heavy apply per item, frees the batch, and
@@ -703,7 +713,12 @@ static void ae_toast_result(const char *op, int applied, int total)
     char text[160];
     _snprintf_s(text, sizeof text, _TRUNCATE, "%s: applied %d/%d (engine round-trip)",
                 op[0] ? op : "apply", applied, total);
-    if (iface && iface->vtbl && iface->vtbl->toast)
+    /* Load/Place already shows its own actionable toast ("staged -- press Ctrl+V to place it") the
+     * moment it schedules -- this generic "SnapStack: ..." one just duplicates/confuses that with no
+     * new information (it's the same op every Qt sh_apply-style caller shares, hence the fixed
+     * "SnapStack" label, which reads as unrelated to a Prefabs-tab action). Skip it for that op only;
+     * the Qt mkcmd command has no toast of its own, so it still needs this one. */
+    if (iface && iface->vtbl && iface->vtbl->toast && strcmp(op, "load-prefab") != 0)
         iface->vtbl->toast(iface, "SnapStack", text);
     /* ALSO log directly -- the toast slot logs too, but a no-editor/late drain might skip the engine toast. */
     char line[200];

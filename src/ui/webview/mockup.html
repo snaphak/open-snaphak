@@ -724,6 +724,10 @@
       else if (d.result === 0) toast('Nothing selected in the editor -- select entities first', 'warn');
       else if (d.result === 2) toast('Hover over one of the selected entities in the 3D view, then try again', 'warn');
       else toast('Could not create "' + d.name + '" (see log)', 'err');
+    } else if (d.kind === 'loadPrefabResult') {
+      if (d.result === 1) toast('"' + d.name + '" staged -- press Ctrl+V in the 3D view to place it', 'ok');
+      else if (d.result === -1) toast('Could not read "' + d.name + '" (see log)', 'err');
+      else toast('Could not stage "' + d.name + '" (editor down?)', 'err');
     } else if (d.kind === 'deletePrefabResult') {
       if (d.result === 1) {
         toast('Deleted "' + d.name + '"', 'ok');
@@ -1050,12 +1054,13 @@
     inp.addEventListener('blur', function(){ finish(true); });
     inp.focus(); inp.select();
   }
-  // card actions. Load/Place is deferred (needs a backend fix -- the engine paste path crashes, same root
-  // cause as Create); Delete is a real file op.
+  // card actions. Delete is a real file op; Load/Place stages the prefab (mkcmd, kind=1) and prompts the
+  // user to paste it manually with Ctrl+V -- see poc_apply_load_prefab in snaphak_ui_webview.cpp.
   var selectedPrefabFolder = '';
   var prefabLoadBtn = document.getElementById('prefabLoadBtn');
   if (prefabLoadBtn) prefabLoadBtn.addEventListener('click', function(){
-    toast('Load / Place is coming soon (needs a backend fix)', 'warn');
+    var name = document.getElementById('pcName').value; if (!name) return;
+    post({cmd:'loadPrefab', name: name, folder: selectedPrefabFolder});
   });
   var prefabDeleteBtn = document.getElementById('prefabDeleteBtn');
   if (prefabDeleteBtn) prefabDeleteBtn.addEventListener('click', function(){
@@ -1094,7 +1099,7 @@
     selectedPrefabFolder = folder;
     post({cmd:'selectPrefab', name: nm, folder: folder});
     ctx.innerHTML = '';
-    addCtx('Load / Place', function(){ toast('Load / Place is coming soon (needs a backend fix)', 'warn'); });
+    addCtx('Load / Place', function(){ post({cmd:'loadPrefab', name: nm, folder: folder}); });
     addCtx('Rename', function(){ renamePrefabItem(item); });
     addCtx('Delete', function(){ showConfirm('Delete "' + nm + '"? This removes the file from disk.', function(){ post({cmd:'deletePrefab', name: nm, folder: folder}); }); });
     ctx.style.left = e.pageX + 'px'; ctx.style.top = e.pageY + 'px'; ctx.style.display = 'block';
