@@ -276,6 +276,8 @@ void sh_iface_bind_engine_slots(const sh_iface_engine_slots *s)
     g_iface_vtbl_live.id_dev_layer_hidden    = s->id_dev_layer_hidden;    /* +0x280 */
     /* clone-extension (the wire-any connect-edit generation counter; entity-list re-read signal). */
     g_iface_vtbl_live.wire_edit_generation   = s->wire_edit_generation;   /* +0x288 */
+    /* clone-extension (the synchronous inline apply -- OG-faithful commit for the SnapStack decl-edit ops). */
+    g_iface_vtbl_live.apply_sync             = s->apply_sync;             /* +0x290 */
 }
 
 /* --------------------------------------------------------------------- the factory -----------------

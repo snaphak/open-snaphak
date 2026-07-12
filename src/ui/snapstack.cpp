@@ -264,6 +264,30 @@ static bool iface_schedule_apply(sh_iface *iface, const std::vector<sh_apply_ite
     return iface->vtbl->apply_edit(iface, items.data(), (int)items.size(), op) != 0;
 }
 
+/* +0x290 SYNCHRONOUS inline apply (OG-faithful): commit the batch NOW on this (UI/think-loop) thread, exactly
+ * like OG's acctargets handler commits +0xd0 inline -- NOT deferred to the main thread. Returns the applied
+ * count, or -1 if the slot is absent (an older backend -> the caller should fall back to schedule). */
+static int iface_apply_sync(sh_iface *iface, const std::vector<sh_apply_item> &items, const char *op)
+{
+    if (!iface || !iface->vtbl || !iface->vtbl->apply_sync) return -1;   /* slot absent -> caller fallback */
+    if (items.empty()) return 0;
+    return iface->vtbl->apply_sync(iface, items.data(), (int)items.size(), op);
+}
+
+/* Apply a batch the OG-FAITHFUL way: SYNCHRONOUS inline (+0x290) when the backend has it, else the deferred
+ * +0xd0 schedule (older backend only). ALL the decl-edit SnapStack ops (accl/acctargets/bss/bsi/bsf/bsb/bse)
+ * go through this so the commit runs INLINE on the UI/think-loop thread -- serialize + commit atomic on one
+ * thread -> the committed decl-source block has a SINGLE clean owner (OG's behavior). The deferred +0xd0 split
+ * them across threads/frames and double-owned the block -> the play->teardown double-free ("Memory corruption
+ * before block"). Returns true if applied (or scheduled on the fallback). */
+static bool iface_apply(sh_iface *iface, const std::vector<sh_apply_item> &items, const char *op)
+{
+    if (items.empty()) return false;
+    int applied = iface_apply_sync(iface, items, op);   /* +0x290 sync -> applied count (>=0), or -1 absent */
+    if (applied >= 0) return true;                       /* sync ran; backend toasts the applied/total count */
+    return iface_schedule_apply(iface, items, op);       /* old backend without +0x290 -> deferred fallback */
+}
+
 /* the work-item argv is argv[0]=subcommand, argv[1..]=its args; this fetches argv[n] safely. */
 static const char *arg_at(int argc, const char **argv, int n)
 {
@@ -664,6 +688,90 @@ static std::string patch_full_json_reflist(const std::string &full_json, const s
     return std::string(out.constData(), (size_t)out.size());
 }
 
+/* --- DECL-SOURCE targets splice (the crash-free acctargets/accl apply path) ---------------------------
+ * Splice a `<path> = { item[0]="ref0"; ...; num=N; }` LIST into the edit{} block of a DECL-SOURCE text
+ * (decl syntax: '=' assignments, ';' terminators, tab indent -- NOT JSON). acctargets/accl now apply the
+ * SAME way the manual Entity-State Save + the class/inherit handlers do: read the live decl source via
+ * +0x30, edit it as text, commit via the SYNCHRONOUS +0x40 DeclSourceRebuild. This REPLACES the deferred
+ * entity-JSON -> temp-def-deserialize (ae_apply_one), whose reload-teardown DOUBLE-FREES the committed
+ * source block (the acctargets play->save->reload crash; live-diagnosed 2026-07-12 -- OG's +0xd0 commit is
+ * byte-identical to ours, so the divergence was the deferral/temp-def, not the commit content). Accumulate
+ * with dedup onto any existing block. Single-level path (acctargets = "targets"). Returns "" on a shape
+ * failure (the caller then leaves the receiver untouched). */
+static size_t decl_match_brace(const std::string &s, size_t open)   /* index of the '}' matching s[open]=='{' */
+{
+    int depth = 0;
+    for (size_t i = open; i < s.size(); i++) {
+        if (s[i] == '{') depth++;
+        else if (s[i] == '}') { if (--depth == 0) return i; }
+    }
+    return std::string::npos;
+}
+static std::string splice_decl_reflist(const std::string &decl, const std::string &path,
+                                       const std::vector<std::string> &ids)
+{
+    /* locate the top-level `edit { ... }` block (entityDef.state.edit -- where the lists live). */
+    size_t ek = decl.find("edit");
+    if (ek == std::string::npos) return std::string();
+    size_t eo = decl.find('{', ek);
+    if (eo == std::string::npos) return std::string();
+    size_t ec = decl_match_brace(decl, eo);
+    if (ec == std::string::npos) return std::string();
+
+    /* find an existing `<path> = { ... }` block INSIDE edit{} (token-boundary match). */
+    size_t blkOpen = std::string::npos, blkClose = std::string::npos;
+    for (size_t scan = eo + 1; scan < ec; ) {
+        size_t f = decl.find(path, scan);
+        if (f == std::string::npos || f >= ec) break;
+        char b = (f > 0) ? decl[f - 1] : ' ';
+        char a = (f + path.size() < decl.size()) ? decl[f + path.size()] : ' ';
+        int btok = (b==' '||b=='\t'||b=='\n'||b=='\r'||b=='{');
+        int atok = (a==' '||a=='\t'||a=='=');
+        if (btok && atok) {
+            size_t eq = decl.find('=', f + path.size());
+            size_t br = (eq != std::string::npos) ? decl.find_first_not_of(" \t", eq + 1) : std::string::npos;
+            if (br != std::string::npos && br < ec && decl[br] == '{') {
+                blkOpen  = br;
+                blkClose = decl_match_brace(decl, br);
+                break;
+            }
+        }
+        scan = f + path.size();
+    }
+
+    /* gather existing refs (dedup) from the block, then append the new ids (dedup). */
+    std::vector<std::string> refs;
+    std::set<std::string> present;
+    if (blkOpen != std::string::npos && blkClose != std::string::npos) {
+        for (size_t p = blkOpen + 1; p < blkClose; ) {
+            size_t it = decl.find("item[", p);
+            if (it == std::string::npos || it >= blkClose) break;
+            size_t q1 = decl.find('"', it);
+            if (q1 == std::string::npos || q1 >= blkClose) break;
+            size_t q2 = decl.find('"', q1 + 1);
+            if (q2 == std::string::npos || q2 >= blkClose) break;
+            std::string ref = decl.substr(q1 + 1, q2 - q1 - 1);
+            if (present.insert(ref).second) refs.push_back(ref);
+            p = q2 + 1;
+        }
+    }
+    for (size_t i = 0; i < ids.size(); i++)
+        if (present.insert(ids[i]).second) refs.push_back(ids[i]);
+    if (refs.empty()) return std::string();
+
+    /* build the block body: item[K] = "ref"; ... num = N; (decl syntax, tab-indented). */
+    std::string body;
+    for (size_t k = 0; k < refs.size(); k++)
+        body += "\t\titem[" + std::to_string(k) + "] = \"" + refs[k] + "\";\n";
+    body += "\t\tnum = " + std::to_string(refs.size()) + ";\n";
+
+    if (blkOpen != std::string::npos)                        /* REPLACE the existing block's interior */
+        return decl.substr(0, blkOpen + 1) + "\n" + body + "\t" + decl.substr(blkClose);
+    /* INSERT a fresh `<path> = { ... }` just before edit{}'s closing brace. */
+    std::string blk = "\t" + path + " = {\n" + body + "\t}\n";
+    return decl.substr(0, ec) + blk + decl.substr(ec);
+}
+
 /* Resolve a handler's operand arg (argv[1]) -> the operand ids, reproducing OG FUN_180001fa0 (the resolver
  * shared by bss/bsi/bsf/bsb, bsin/bscls/bsincls, mkcmd and popsel). The OG contract: numeric stacks are
  * ONE-SHOT SCRATCH -- every apply/use op DRAINS the stack -- while named GROUPS are the persistent, reusable
@@ -709,8 +817,8 @@ static void do_bulkset(sh_iface *iface, const char *op, int argc, const char **a
         items.push_back(it);
     }
     if (items.empty()) { iface_toast(iface, "SnapStack", "serialize/patch produced no apply"); return; }
-    if (!iface_schedule_apply(iface, items, op)) {
-        char t[96]; _snprintf_s(t, sizeof t, _TRUNCATE, "%s: schedule failed (editor down?)", op);
+    if (!iface_apply(iface, items, op)) {   /* +0x290 SYNCHRONOUS inline (OG-faithful); deferred fallback */
+        char t[96]; _snprintf_s(t, sizeof t, _TRUNCATE, "%s: apply failed (editor down?)", op);
         iface_toast(iface, "SnapStack", t);
     }
 }
@@ -752,8 +860,8 @@ static void h_bsb(void *ctx, int argc, const char **argv)
     if (re_resolve_mismatch) {
         iface_toast(iface, "SnapStack", "bsb: some entities skipped (property/value re-resolve mismatch)");
     }
-    if (!items.empty() && !iface_schedule_apply(iface, items, "bsb"))
-        iface_toast(iface, "SnapStack", "bsb: schedule failed (editor down?)");
+    if (!items.empty() && !iface_apply(iface, items, "bsb"))   /* +0x290 SYNCHRONOUS inline; deferred fallback */
+        iface_toast(iface, "SnapStack", "bsb: apply failed (editor down?)");
     else if (items.empty())
         iface_toast(iface, "SnapStack", "bsb: serialize/patch produced no apply");
 }
@@ -789,8 +897,8 @@ static void h_bse(void *ctx, int argc, const char **argv)
         items.push_back(it);
     }
     if (items.empty()) { iface_toast(iface, "SnapStack", "bse: produced no apply"); return; }
-    if (!iface_schedule_apply(iface, items, "bse"))
-        iface_toast(iface, "SnapStack", "bse: schedule failed (editor down?)");
+    if (!iface_apply(iface, items, "bse"))   /* +0x290 SYNCHRONOUS inline (OG-faithful); deferred fallback */
+        iface_toast(iface, "SnapStack", "bse: apply failed (editor down?)");
 }
 
 /* accl/acctargets shared body (0x2498 / 0x228c): pop LAST id (=RECEIVER); build a num/item[] LIST of ALL
@@ -835,15 +943,26 @@ static void do_acc(sh_iface *iface, const char *op, int argc, const char **argv,
         iface_toast(iface, "SnapStack", t);
     }
 
-    std::string full = iface_serialize_entity(iface, popped);
+    /* APPLY the OG-FAITHFUL way: the exact temp-def round-trip OG uses (serialize entity JSON -> patch the
+     * num/item[] list -> deserialize onto a temp def -> DeclSourceRebuild + IdStrAssign = ae_apply_one), but
+     * committed SYNCHRONOUSLY INLINE on THIS (UI/think-loop) thread via +0x290 -- exactly like OG's acctargets
+     * handler (FUN_18000228c) commits its +0xd0 (FUN_180004b80) inline. This is the REAL fix (2026-07-12):
+     * OG's commit is byte-identical to ours and OG runs it on this same UI thread, so the round-trip was never
+     * wrong -- the bug was our DEFERRAL (serialize on UI thread, commit a frame later on the DOOM main thread),
+     * which double-owned the committed decl-source block -> the play->teardown double-free. Committing inline
+     * gives the block one clean owner. (An OG-diverging decl-source splice via +0x40 also works -- kept as
+     * splice_decl_reflist for reference -- but the inline commit keeps us faithful to OG and fixes bss/bse/
+     * timeline the same way.) iface_apply_sync returns -1 only on an OLD backend without +0x290 -> deferred
+     * fallback. See scratchpad og_baseline_entity63.md + [[snapstack-architecture-mismatch]]. */
+    std::string full = iface_serialize_entity(iface, popped);      /* +0xc8 serialize (UI thread, works) */
     if (full.empty()) { iface_toast(iface, "SnapStack", "accl: receiver serialize failed"); return; }
     std::string patched = patch_full_json_reflist(full, path, idStrings);
     if (patched.empty()) { iface_toast(iface, "SnapStack", "accl: list patch failed"); return; }
 
     sh_apply_item it; it.kind = 0; it.id = popped; it.text = patched.c_str();
     std::vector<sh_apply_item> items(1, it);
-    if (!iface_schedule_apply(iface, items, op))
-        iface_toast(iface, "SnapStack", "accl: schedule failed (editor down?)");
+    if (!iface_apply(iface, items, op))   /* +0x290 SYNCHRONOUS inline commit (OG-faithful); deferred fallback */
+        iface_toast(iface, "SnapStack", "accl: apply failed (editor down?)");
 }
 static void h_accl(void *ctx, int argc, const char **argv)       { do_acc((sh_iface *)ctx, "accl", argc, argv, /*hardcoded=*/false); }
 static void h_acctargets(void *ctx, int argc, const char **argv) { do_acc((sh_iface *)ctx, "acctargets", argc, argv, /*hardcoded=*/true); }

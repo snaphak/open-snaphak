@@ -6,6 +6,46 @@ where our own reimplementation was wrong, not the original SnapHak's behavior; a
 (or faithful reproduction of) the *original's* behavior belongs in [`fidelity.md`](fidelity.md)
 instead. Entries are chronological, newest first.
 
+## 2026-07-12 — SnapStack decl-edits double-freed the committed decl-source block; fixed with a synchronous inline apply (`+0x290`)
+
+The long-standing SnapStack crash — run `acctargets` (or `bss`/`bsi`/`bsf`/`bsb`/`bse`), hit **Play**,
+then trigger **any** map teardown (reload the same map, **New Map**, or load an unrelated map) and DOOM
+dies with `"Memory corruption before block!"` — an access violation at
+`DOOM+0x1ab32ee ← 0x19fd162` (`IdStrDtor`) `← 0x17ad00a` (decl-source teardown), `load_state=3`. No save
+required; the corruption is in live memory, not the map file. See [`qt-changes.md`](qt-changes.md) for the
+full investigation narrative — this entry documents the backend mechanism and the fix.
+
+**Root cause — the deferral, not the commit.** Live reverse-engineering of OG SnapHak (Beta 2) proved our
+commit body `ae_apply_one` is byte-for-byte OG's `+0xd0` commit (`FUN_180004b80`), and our committed
+decl-source blob is byte-identical to OG's. The *only* difference was **when** it runs. OG's SnapStack
+handlers commit **inline, synchronously, on the UI/think-loop thread** (the `+0x1a0` work-queue drain).
+Our clone ran the command handler on that same UI thread but **deferred** the heavy commit to the DOOM
+main thread via `clone_bss_apply` at `ExecuteCommandBuffer` (the old "FIX B", added on the belief that the
+structured deserialize AVs off the main thread). That split one atomic operation across two threads and
+two frames, and left the freshly-committed decl-source block **double-owned** — so the next map teardown
+freed it twice → heap-header corruption → the fault above.
+
+The deferral's premise was stale: our `+0xc8` serialize already runs successfully on the UI thread, and
+the reflection context it needs is a process-global singleton (engine `0x17f7030` → vtable `+0x80`),
+reachable from any thread — OG proves it by committing on exactly that thread.
+
+**Fix — a synchronous inline apply slot, `+0x290` (`apply_sync`).** Added to the matched-pair vtable ABI
+(`snaphak_iface.h`/`.c`, `apply_engine.c` `slot_apply_sync`, exported via `sh_apply_engine_get_slots` and
+folded in by `iface_engine.c`). It runs the same per-item batch as the `clone_bss_apply` drain
+(kind 0 = decl edit / 1 = mkcmd / 3 = target-write) but **inline on the calling UI thread**, so serialize +
+commit are atomic and the committed block has a single clean owner — OG's exact flow. Because the commit
+is now inline, callers pass their own item text with no deep-copy/pending store. Each `ae_apply_one` stays
+SEH-guarded, so an off-main reflect gap (if it ever occurred) degrades to `applied 0`, never a crash. The
+frontend routes all decl-edit ops through it (see [`qt-changes.md`](qt-changes.md)); the deferred `+0xd0`
+schedule is kept only as a fallback for an old backend without `+0x290`, and for `mkcmd`/prefab-paste
+(`kind=1`), which never crashed and is left deferred. A backend-log marker
+`C2 SYNC apply: N item(s) INLINE on this thread (op)` confirms the inline path at runtime.
+
+This supersedes the earlier "JSON round-trip vs in-memory node-tree edit" theory: our round-trip matched
+OG's, so it was never the problem. **TODO:** migrate Timeline Save (its own `|0x80` path in `sh_timeline.cpp`)
+to `+0x290` as well, and quiet the `AE_APPLY_DIAG` / `AE_DESER_DIAG` / `+0x40 rebuild` / `C2 SYNC apply`
+diagnostics before release.
+
 ## 2026-07-08 — `apply_engine.c`: `ae_apply_one` could commit an empty class/inherit
 
 Found while root-causing a hard crash-to-desktop / hang on returning to the SnapMap editor after

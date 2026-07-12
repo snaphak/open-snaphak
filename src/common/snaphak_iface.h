@@ -165,6 +165,17 @@ typedef int          (*sh_enum_inherits_fn)(struct sh_iface *self,
 typedef int          (*sh_id_dev_layer_hidden_fn)(struct sh_iface *self, int id);                /* +0x280 (ext 3) */
 typedef int          (*sh_wire_edit_generation_fn)(struct sh_iface *self);                       /* +0x288 (ext 4) */
 
+/* +0x290 (ext 5) SYNCHRONOUS inline apply -- the OG-faithful commit path. Same signature as the +0xd0
+ * schedule, but it does NOT defer: it runs the apply batch RIGHT NOW on the CALLING (UI/think-loop) thread,
+ * exactly like OG's acctargets handler (FUN_18000228c), which calls its +0xd0 commit (FUN_180004b80)
+ * INLINE. The SnapStack decl-edit ops (acctargets/accl/bss/bse) use THIS instead of the deferred +0xd0 so
+ * serialize + commit happen atomically on one thread -> the committed decl-source block has a SINGLE clean
+ * owner (OG's behavior). The deferred +0xd0 split them across threads/frames and double-owned the block ->
+ * the play->teardown double-free. Returns the applied count (SEH-guarded per item; an off-main reflect gap
+ * degrades to 0, never a crash). */
+typedef int          (*sh_apply_sync_fn)(struct sh_iface *self, const struct sh_apply_item *items,
+                                         int count, const char *op_label);                        /* +0x290 (ext 5) */
+
 /* ------------------------------------------------------------------ heavy apply slots --------
  * The heavy serialize/deserialize/apply slots the SnapStack APPLY-ops (bss/bsi/bsf/bsb/bse/accl/
  * acctargets/mkcmd) need. These are the native port of the reference implementation's +0xc8 serialize / +0xd0 deserialize-
@@ -338,6 +349,7 @@ typedef struct sh_iface_vtbl {
     sh_id_dev_layer_hidden_fn id_dev_layer_hidden;   /* +0x280 (ext 3) dev-layer entity-hidden query */
     sh_wire_edit_generation_fn wire_edit_generation; /* +0x288 (ext 4) wire-any connect-edit generation counter
                                                       * (entity-list re-read signal; see wiring_cleandirect.c) */
+    sh_apply_sync_fn           apply_sync;           /* +0x290 (ext 5) SYNCHRONOUS inline apply (OG-faithful) */
 } sh_iface_vtbl;
 
 /* ------------------------------------------------------------------ the interface object -----------
@@ -461,6 +473,8 @@ typedef struct sh_iface_engine_slots {
     sh_id_dev_layer_hidden_fn    id_dev_layer_hidden;   /* +0x280 (ext 3) */
     /* clone-extension: the wire-any connect-edit generation counter (entity-list re-read signal). */
     sh_wire_edit_generation_fn   wire_edit_generation;  /* +0x288 (ext 4) */
+    /* clone-extension: the synchronous inline apply (OG-faithful commit; SnapStack decl-edit ops). */
+    sh_apply_sync_fn             apply_sync;            /* +0x290 (ext 5) */
 } sh_iface_engine_slots;
 
 void sh_iface_bind_engine_slots(const sh_iface_engine_slots *slots);

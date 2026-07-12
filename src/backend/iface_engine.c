@@ -764,6 +764,20 @@ static void slot_rebuild_declsource(sh_iface *self, int id, const char *cstr)
     if (!g_decl_rebuild || !cstr) return;
     void *defsub = defsub_for_id(id);
     if (!defsub) return;
+    /* DIAG (remove before release): confirm the +0x40 rebuild path ran + dump the EXACT source committed,
+     * so the acctargets decl-source splice can be validated as well-formed decl syntax. This slot is shared
+     * by the manual Save + class/inherit handlers too, so it also traces those. */
+    {
+        char dbg[512];
+        int slen = (int)strlen(cstr);
+        _snprintf_s(dbg, sizeof dbg, _TRUNCATE, "+0x40 rebuild id=%d srclen=%d head='%.220s'", id, slen, cstr);
+        backend_log(dbg);
+        if (slen > 180) {
+            char dbg2[160];
+            _snprintf_s(dbg2, sizeof dbg2, _TRUNCATE, "+0x40 rebuild id=%d tail='%.100s'", id, cstr + slen - 100);
+            backend_log(dbg2);
+        }
+    }
     __try { g_decl_rebuild(defsub, cstr, 1); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
@@ -1073,7 +1087,8 @@ int sh_iface_engine_install(const sig_result *results, size_t n, const uint8_t *
     /* fold in the heavy apply-chain slots (serialize entity +0xc8 / schedule-apply +0xd0 /
      * read-prefab +0xb8). sh_apply_engine_install must have run first (dllmain orders it before this) so
      * its engine fns are resolved; the slot bodies themselves null-check + degrade if a dep is missing. */
-    sh_apply_engine_get_slots(&slots.serialize_entity, &slots.apply_edit, &slots.read_prefab);
+    sh_apply_engine_get_slots(&slots.serialize_entity, &slots.apply_edit, &slots.read_prefab,
+                              &slots.apply_sync);   /* +0x290 SYNCHRONOUS inline apply (OG-faithful) */
     /* the +0xb0 serialize-SELECTION->prefab slot also lives in the apply engine (it needs the
      * serialize engine fns). Fold it into the same bind. */
     sh_apply_engine_get_serialize_selection(&slots.serialize_selection);
