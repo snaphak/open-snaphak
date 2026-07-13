@@ -1632,11 +1632,12 @@
         renderTimelineEditor(d.ok ? parseTimeline(d.eid, d.json) : {eid:d.eid, ok:false});
       }
     } else if (d.kind === 'saveTimelineResult') {
-      // A failure here most commonly means the entity hasn't survived a map save+reload since it was
-      // placed/reclassed yet (a known engine limitation, not a webview bug -- copy/paste does NOT fix this
-      // and risks its own corruption; save the map and reload it instead, then retry).
+      // The old "fresh timeline can't save until a map save+reload" behavior was NOT an engine limitation --
+      // it was a JS typeof-null throw in tlBuildPatchedEntityJson (fixed) plus a deferred-apply crash (fixed);
+      // fresh placement and reclass both save immediately now. A failure reaching here is a genuine backend
+      // refusal (editor down, or a class/inherit the engine rejects) -- report it plainly, no workaround pitch.
       if (d.result === 1) { toast('Timeline saved', 'ok'); tlDirty = false; }   // just-committed local model is the new clean baseline
-      else toast('Save failed -- if this entity was just placed or reclassed, save the map and reload it, then try again', 'err');
+      else toast('Save failed (see log)', 'err');
     }
   }
 

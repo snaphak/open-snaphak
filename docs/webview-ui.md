@@ -32,16 +32,17 @@ statically links the WebView2 loader, so no extra loader DLL ships.
 ## Build + deploy
 
 ```powershell
-# from src/ui/
-powershell -NoProfile -ExecutionPolicy Bypass -File build-webview.ps1   # -> build/snaphakui.dll (Qt-free)
-# from the repo root
-powershell -NoProfile -ExecutionPolicy Bypass -File package.ps1          # -> dist/
-installer\snaphak.exe install --local dist                               # deploy (DOOM must be closed)
+# from the repo root -- builds the backend (build/XINPUT1_3.dll) + the Qt-free frontend (build/webview/snaphakui.dll)
+powershell -NoProfile -ExecutionPolicy Bypass -File build-webview.ps1
+# assemble the lean overlay (2 files only: XINPUT1_3.dll + snaphak/snaphakui.dll -- NO Qt runtime)
+powershell -NoProfile -ExecutionPolicy Bypass -File package-webview.ps1   # -> dist/
+installer\snaphak.exe install --local dist --yes                          # deploy (DOOM must be closed)
 ```
 
-Do **not** run `build.ps1` after `build-webview.ps1` -- it rebuilds the Qt `snaphakui.dll` and overwrites
-the WebView2 one. Runtime log: `<DOOM>\snaphak_logs\webview_poc.log`. The overlay still copies the three
-Qt DLLs (dead weight for this frontend); stripping them from `package.ps1` is a pending cleanup.
+The Qt and WebView frontends build to **separate** output paths (`build/qt/` vs `build/webview/`), so building
+one no longer overwrites the other -- and `package-webview.ps1` assembles a lean overlay that ships **only**
+the two clone DLLs (the WebView2 runtime is system-installed; no Qt DLLs, unlike the Qt overlay from
+`package-qt.ps1`). Runtime log: `<DOOM>\snaphak_logs\webview_poc.log`.
 
 ## How it maps to the backend interface
 
@@ -155,6 +156,15 @@ that the Save-to-Decl setters (decl/classname/inherit/displayname) can't overflo
 that doc for the write-up.
 
 ### 2026-07-08 -- Timeline event-arg widgets, Save Timeline shipped, crash root-cause + workaround found
+
+> **CORRECTION (2026-07-13):** the crash root-cause and "freshly-placed needs save+reload / it's a
+> pre-existing engine limitation" conclusions in this entry were later **disproven** — see the 2026-07-13
+> Changelog entry above and the retraction in [`fidelity.md`](fidelity.md). The crash was our own
+> deferred-apply double-free (fixed by the `+0x290` inline commit), and the "silently stops partway through
+> the save handler, no exception... never pinned down" postmortem below was a JavaScript `typeof null ===
+> 'object'` throw on a `null` `state.edit` (fixed 2026-07-13). Fresh Timelines now save with no workaround.
+> The event-arg widget work in this entry is unaffected and still current; the investigative narrative is
+> kept as-is for history.
 
 - **Every event-arg kind now gets a real editable widget**, not just read-only text: bool (checkbox),
   float/int/text (plain input), decl (a dropdown constrained to real engine decl names, via
@@ -426,8 +436,6 @@ Genuinely open items only -- fixed bugs and completed work live in the Changelog
   via the engine's per-entity refresh is a possible future experiment.
 - Undo covers only unsaved edits (the Revert button + the textarea's native undo); undoing a committed Save
   is not implemented.
-- The overlay still ships the three Qt DLLs, and `build-webview.ps1` fetches the newest WebView2 SDK (a
-  prerelease); both are pending cleanups (strip the Qt DLLs from `package.ps1`; pin the SDK).
 - Not wired into CI (CI builds the Qt path via `build.ps1`).
 
 ## Preview mode
