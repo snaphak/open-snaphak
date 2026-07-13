@@ -86,6 +86,43 @@ for why decl-edits must NOT go through it).
 Newest first. Each dated entry covers one working session's worth of change; the undated **Baseline**
 entry at the bottom is the original POC buildout, before this doc tracked dates per entry.
 
+### 2026-07-13 -- Timeline parity with Qt: palette-inherit normalize, inline Save Timeline, and the fresh-save `typeof null` bug
+
+A focused session bringing WebView's Timeline handling to full parity with Qt. Three real fixes, found by
+methodical in-game testing (Qt as the validated reference) plus, for the last one, a step-by-step
+JS→native chain trace. All verified in-game on both **palette-placed and reclassed** Timelines, including
+play/save/reload persistence.
+
+- **Palette-Timeline portable-inherit normalize now works in WebView** (it didn't before). A Timeline
+  placed from the in-game palette carries the non-portable `snapmaps/editor_only/placeholder_target`
+  inherit; Qt rewrote it to `snapmaps/unknown`, WebView did nothing. The rewrite was **ported into a shared
+  backend slot (`+0x298`)** so both frontends run one implementation (see
+  [`backend-changes.md`](backend-changes.md)); WebView calls it from its Timeline rescan. Porting it
+  surfaced a latent **decl-source-blob-lag** bug (the Inherit box and the saved map kept showing the
+  placeholder even after the raw field updated) — root-caused and fixed backend-side; see that doc.
+- **Save Timeline commits inline (`+0x290`), matching Qt** — no more crash on the next play/save/reload.
+  WebView's Save Timeline had been using the deferred `+0xd0` schedule, the exact deferred-apply
+  double-free Qt fixed in 2026-07-12; migrated to `poc_apply_sync_seh`.
+- **Fresh Timelines now save immediately, with no copy/paste or map save+reload first** — closing the last
+  gap vs Qt. This had been mis-documented (in [`fidelity.md`](fidelity.md), now retracted) as a pre-existing
+  *engine* limitation. It was actually a **JavaScript `typeof null === 'object'` bug** in
+  `tlBuildPatchedEntityJson`: a freshly-placed/reclassed Timeline serializes as `edit = NULL;`
+  (`"state":{"edit":null}`), and the `typeof x !== 'object'` guard let the `null` through; the next line
+  (`edit[compKey] = …`) then threw *uncaught*, silently aborting the entire Save — no toast, nothing
+  reaching the backend. Fixed with explicit `=== null` checks. A JS→native `diag` tracer (since removed)
+  pinpointed it: the trace showed the save entering the correct branch and the re-serialize succeeding, but
+  the line immediately after `tlBuildPatchedEntityJson` never executing — an uncaught throw inside it.
+- The Entity-State panel also gained a **per-field dirty exception** so an authoritative external inherit
+  correction (from the normalize above) can land on the untouched Inherit box even mid-edit of another
+  field, instead of the whole-panel dirty guard freezing stale placeholder text.
+
+> **Architectural follow-up (tracked):** the SnapStack command logic (`snapstack.cpp`) is still **Qt-only**,
+> and each frontend independently picks inline vs deferred at every decl-edit call site — a footgun that
+> caused the WebView Save Timeline regression above (one reverted line silently dropped it back onto the
+> crash path). The durable fix is to **port SnapStack into the backend** as shared handlers with the extra
+> ops WebView lacks, so both frontends share one commit path. See "Known limitations / TODO" and
+> [`backend-changes.md`](backend-changes.md).
+
 ### 2026-07-12 -- Contributor follow-ups: path-safety gate, pinned WebView2 SDK, malloc null-check
 
 A contributor reviewing the WebView frontend PR flagged three low-risk, non-blocking items (plus two
@@ -355,24 +392,15 @@ that doc for the write-up.
 
 Genuinely open items only -- fixed bugs and completed work live in the Changelog above, not here.
 
-- **Save Timeline only works on an entity that has survived at least one map save+reload since it was
-  placed or reclassed.** On a genuinely freshly-placed/reclassed Timeline, the first Save Timeline
-  attempt silently does nothing (panel gives no feedback either way); a plain native Save Map + Reload
-  unblocks it permanently, with no further crash or corruption across repeated edit/save/reload cycles
-  afterward. Confirmed to be a pre-existing engine/tool limitation, not a clone bug -- reproduces
-  identically in the genuine, unmodified original SnapHak 2 Beta. **Do not use copy/paste as a
-  workaround for this** -- it also "unblocks" saving, but was confirmed (in both the clone and the
-  original tool) to corrupt something that only surfaces on a later map reload. Full detail in
-  [`fidelity.md`](fidelity.md#a-freshly-placedreclassed-timeline-needs-a-map-savereload-before-it-accepts-data).
-- **Open question: why does a first-attempt Save Timeline give zero feedback, on a real fresh entity,
-  even with heavy diagnostic instrumentation in place?** An investigation this session (see the
-  2026-07-08 Changelog postmortem) got as far as: the request is scheduled successfully, the engine's
-  own backend log shows it committing the data correctly once past the limitation above, but something
-  in between silently halts execution partway through the JS save handler on a genuinely fresh entity's
-  first attempt -- no exception, no hang, reproducible every time in-game, yet the identical code path
-  completes successfully in an isolated browser preview. Not re-investigated since (the save+reload
-  workaround makes it non-blocking); flagging for a future session with better JS-debugging access into
-  the live WebView2 instance (this project currently has none -- no DevTools console attached).
+- **~~Save Timeline only works after a map save+reload~~ / ~~open question: zero feedback on a fresh
+  entity~~ — both RESOLVED 2026-07-13.** These two former limitations were the same bug and are fixed. The
+  "silently halts partway through the JS save handler, no exception, no hang, yet completes fine in the
+  browser preview" mystery was an **uncaught `TypeError`** from `tlBuildPatchedEntityJson`: a fresh
+  Timeline's `"edit":null` slipped past a `typeof` guard and the next property assignment threw (the browser
+  preview never reproduced it because its sample data has a real `edit` object, never `null`). Plus the
+  crash half was our deferred-apply bug, not the engine. Fresh placement *and* reclass now save immediately,
+  no workaround, verified in-game. See the 2026-07-13 Changelog entry above and the retraction in
+  [`fidelity.md`](fidelity.md).
 - **"Use current selection"** (the Timeline "Runs on" picker's button) is a visual placeholder; needs a
   new native round-trip to read the live 3D-editor selection.
 - **"Create New Timeline" stays disabled.** `sh_timeline.h` (the Qt port) documents that a clone-side
@@ -380,8 +408,19 @@ Genuinely open items only -- fixed bugs and completed work live in the Changelog
   work) -- but a live decompile of the OG's `retranslateUi` this session found a real
   `"Create New Timeline"` button and string in the *original* binary, which contradicts that assumption.
   Not re-investigated yet; flagging it here so the disabled state doesn't get treated as settled.
-- **Push to stack 0** is a stub: the SnapStack subsystem (`snapstack.cpp`) is Qt-bound and its consuming
-  ops are not ported to this frontend.
+- **Push to stack 0** is a stub, and more broadly **SnapStack must be ported to the backend** (TODO). The
+  SnapStack subsystem (`snapstack.cpp`) is entirely Qt-bound: its command handlers (acctargets/accl/
+  bss/bsi/bsf/bsb/bse/mkcmd/push-to-stack/…) live in the Qt frontend, so WebView has none of them. Beyond
+  the missing features, the *architecture* is the real issue: **each frontend independently chooses inline
+  (`+0x290`) vs deferred (`+0xd0`) at every decl-edit call site**, which is a latent-crash footgun — it bit
+  this cycle when WebView's Save Timeline silently regressed to the deferred double-free path after one line
+  was reverted (see the 2026-07-13 Changelog entry). The durable fix: **port the SnapStack command handlers
+  down into the backend** (`XINPUT1_3.dll`) as shared handlers — adding the ops WebView currently lacks —
+  so both frontends send high-level command intents through one commit path and can't diverge on the
+  inline/deferred choice. A cheaper interim hardening (not a substitute): make the backend's `+0xd0`
+  schedule commit `kind=0` decl-edits inline regardless, only truly deferring `kind=1` mkcmd staging, so no
+  frontend call site can pick the crashing path. Full rationale in
+  [`backend-changes.md`](backend-changes.md) (2026-07-13 entry).
 - Editing an entity's decl does not re-present it live in the editor (a decl commit updates the definition
   but not the already-spawned instance -- same as Save-to-Decl in the Qt UI). A live in-editor re-present
   via the engine's per-entity refresh is a possible future experiment.

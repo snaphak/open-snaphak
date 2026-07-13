@@ -40,25 +40,30 @@ but is a genuine, faithfully-carried-over engine requirement, confirmed once tho
 fixed. The webview UI checks for it up front (the hovered-id slot, `+0x198`) and surfaces an
 accurate "hover over an entity first" message instead of a crash or a misleading generic one.
 
-### A freshly placed/reclassed Timeline needs a map save+reload before it accepts data
-Placing (or reclassing) an `idTarget_Timeline`/`idEncounterManager` entity produces something that
-*looks* fully real — it shows in the Timelines list, opens to a normal (empty) editor — but Save
-Timeline silently does nothing on the very first attempt, every time, regardless of content.
-**Save the map, reload it once, and it works from then on** — confirmed to hold indefinitely across
-repeated edit/save/reload cycles afterward, with no further crash or corruption. Copy/paste (the
-previous workaround for the same "won't save" symptom) is a *different*, unsafe path — it also
-"unblocks" the entity, but was independently confirmed (via a hard crash reproduced identically in
-`snaphak_ui_webview.cpp`'s clone **and** the genuine, unmodified original SnapHak 2 Beta tool) to
-corrupt something that only surfaces much later, typically on the next full map reload. **Avoid
-copy/paste for Timelines; use save+reload instead.**
+### ~~A freshly placed/reclassed Timeline needs a map save+reload before it accepts data~~ — RETRACTED 2026-07-13: was two clone bugs, not an engine limitation
 
-This was extensively investigated as a suspected clone bug this session — live Ghidra disassembly of
-the engine's `PasteInstantiate` (the native Ctrl+V handler, a large multi-field entity clone) and
-`DeclSourceRebuild`, plus direct testing against the real, unmodified SnapHak 2 Beta and v1.3.1 tools
-— before concluding it is a genuine, pre-existing engine/tool limitation around how a just-instantiated
-entity's internal state settles, not something introduced by the clone. Full investigation trail in
-[`webview-ui.md`](webview-ui.md); the exact internal mechanism (what specifically a save+reload fixes)
-remains un-RE'd — flagged as an open item, not a settled root cause.
+**This entry is retracted.** It was documented (2026-07-08) as a genuine pre-existing engine/tool
+limitation, but that conclusion was wrong. The "won't save until you save+reload the map or copy/paste
+first" behavior was **two separate clone bugs**, both since fixed — a freshly placed *or* reclassed
+Timeline now saves immediately in **both** frontends with no workaround (verified in-game 2026-07-13,
+placement and reclass, including play/save/reload persistence):
+
+1. **The crash half** (the reason copy/paste was branded "unsafe" and pinned on the engine) was our own
+   **deferred-apply double-free**: decl-edit commits were *scheduled* onto the DOOM main thread (`+0xd0`)
+   instead of committed inline, double-owning the decl-source block and freeing it twice on the next map
+   teardown. Fixed by the `+0x290` synchronous inline apply — Qt first (2026-07-12), then webview's Save
+   Timeline (2026-07-13). See [`backend-changes.md`](backend-changes.md) / [`qt-changes.md`](qt-changes.md).
+2. **The "won't save" half, webview-specific,** was a JavaScript `typeof null === 'object'` bug in
+   `tlBuildPatchedEntityJson`: a fresh Timeline serializes as `edit = NULL;` (`"edit":null`), the `null`
+   slipped past a `typeof x !== 'object'` guard, and the next property assignment threw *uncaught* — so
+   the whole Save silently aborted (no toast, nothing reached the backend). Fixed 2026-07-13 with explicit
+   `=== null` checks. See [`webview-ui.md`](webview-ui.md).
+
+The lesson kept here: the original tools were never re-tested in a way that *isolated* these two bugs, and
+the "reproduces in the unmodified original SnapHak 2 Beta" claim conflated a real-but-separate engine
+copy/paste behavior with the clone's own save failures. A cautionary example of a wrong "it's the engine,
+not us" conclusion — the discipline that eventually cracked it was a step-by-step JS→native chain trace,
+not more RE of the engine.
 
 ## Fixed (the original was wrong; the clone is now right)
 

@@ -6,6 +6,51 @@ where our own reimplementation was wrong, not the original SnapHak's behavior; a
 (or faithful reproduction of) the *original's* behavior belongs in [`fidelity.md`](fidelity.md)
 instead. Entries are chronological, newest first.
 
+## 2026-07-13 — Palette-Timeline portable-inherit normalize moved into a shared backend slot (`+0x298`); the decl-source blob lags the raw inherit by one commit
+
+**What & why.** A Timeline placed from the in-game SnapMap palette is spawned from a repurposed
+`snapmaps/editor_only/placeholder_target` entityDef (the only way to make a Timeline selectable in the
+palette — the clone can't fabricate one directly), so the fresh entity records *that* as its `inherit`. A
+map saved with it only reloads where our override is installed — not portable. The Qt frontend had a
+normalize (`sh_timeline_normalize_inherit`) that rewrites the inherit to the portable `snapmaps/unknown`,
+but it lived **entirely in Qt** — WebView had no equivalent, so a palette Timeline authored in WebView
+silently kept the non-portable inherit. Ported the logic into a shared backend vtable slot **`+0x298`
+`normalize_timeline_inherit`** (`snaphak_iface.h`/`.c`, `apply_engine.c` `slot_normalize_timeline_inherit`,
+exported via `sh_apply_engine_get_slots`); both frontends now call one implementation. Qt's function became
+a thin wrapper over the slot (old local logic kept only as an old-backend fallback); WebView calls it from
+its Timeline rescan.
+
+**The bug the port exposed — the inherit blob lags one commit.** The normalize kept committing but the
+Inherit box (and the *saved map*) stayed on the placeholder. Root cause is an ordering property of the
+shared commit body `ae_apply_one`: it runs `DeclSourceRebuild` (which re-emits the decl-source blob at
+`defsub+0x38`, baking in the inherit header from the *current* `defsub+0x58`) **before** it assigns the new
+inherit to `defsub+0x58`. So after one commit the raw idStr reads `snapmaps/unknown` but the blob still
+reads the placeholder — and `get_inherit` (`+0x50`) reads that blob, as does the map serializer. The
+normalize's re-fire gate therefore **must read the blob (`defsub+0x38`), not the raw idStr (`defsub+0x58`)**:
+gating on the raw field commits exactly once and leaves the blob stuck forever; gating on the blob keeps it
+firing across rescans until a later commit's `DeclSourceRebuild` finally bakes `snapmaps/unknown` into the
+blob. This is the self-correcting behavior Qt's original `sh_tabs` `get_inherit` gate relied on — the
+"repeated commits" in the log are load-bearing, not waste. (A raw-field gate was tried first and confirmed
+in-game to leave both frontends stuck on the placeholder; the DECL_BLOB_OFF gate fixed it.)
+
+**Footprint note.** The slot heap-allocates its two 256 KB scratch buffers per call and frees them (matching
+Qt's `SH_TL_JSON_CAP`); an earlier version used two persistent 1 MB static/BSS buffers and caused a
+**controller-freelook regression** in-game (2 MB of resident BSS the Qt path never carried) — reverted, and
+the reason it's heap-transient now.
+
+> **This retires the "freshly-placed Timeline needs a save+reload" note in [`fidelity.md`](fidelity.md)**:
+> that was never an engine limitation — it was this deferral crash plus a WebView JS bug (see below /
+> `webview-ui.md`). Both fixed; fresh placement *and* reclass now save immediately in both frontends.
+
+**TODO (architectural, tracked):** the SnapStack command handlers (`snapstack.cpp`) are still **Qt-only**.
+Each frontend independently chooses inline (`+0x290`) vs deferred (`+0xd0`) at every decl-edit call site —
+a footgun that already bit twice this cycle (WebView Save Timeline silently regressed to the deferred crash
+path when one line was reverted). The durable fix is to **port SnapStack down into the backend** as shared
+command handlers (with the additional ops WebView still lacks), so both frontends send high-level intents
+through one commit path and can't diverge. Interim hardening option: make the backend's `+0xd0` schedule
+commit `kind=0` decl-edits inline anyway (only genuinely deferring `kind=1` mkcmd staging), so no frontend
+call site can pick the crashing path. See the convention note in the 2026-07-12 entry below.
+
 ## 2026-07-12 — Confirmed: the decl/classname/inherit/displayname Save setters cannot overflow (contributor follow-up)
 
 A contributor asked us to confirm `set_classname` (+0x78), `set_inherit` (+0x80), `set_displayname`

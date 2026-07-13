@@ -6,6 +6,19 @@ engine layer. Engine-call bugs in `src/backend/` (used by *both* frontends) live
 [`backend-changes.md`](backend-changes.md); faithful-vs-divergent reproduction of the original's behavior
 lives in [`fidelity.md`](fidelity.md). Entries are chronological, newest first.
 
+## 2026-07-13 — `sh_timeline_normalize_inherit` now routes through the shared backend slot (`+0x298`)
+
+The palette-Timeline portable-inherit normalize (rewrite the placeholder inherit
+`snapmaps/editor_only/placeholder_target` → `snapmaps/unknown` so a saved map is portable) was Qt-only,
+which meant WebView silently lacked it. The logic moved into a shared backend slot (`+0x298`
+`normalize_timeline_inherit`; see [`backend-changes.md`](backend-changes.md)); `sh_timeline_normalize_inherit`
+is now a thin wrapper that calls the slot, keeping its old local string-splice implementation **only** as a
+fallback for a backend that predates `+0x298`. Behavior on Qt is unchanged — it's the same rewrite, now
+shared with WebView instead of duplicated. Qt's own `sh_tabs` gate (`get_inherit_copy == placeholder`, which
+reads the lagging decl-source blob) is what drives the re-fire until the blob catches up; the backend slot's
+internal gate matches it (reads the blob, not the raw idStr) so the two agree. No Qt-visible change; recorded
+for traceability of where the logic now lives.
+
 ## 2026-07-12 — Path-safety gate on prefab/folder names (contributor follow-up, shared with WebView)
 
 A contributor reviewing the WebView frontend PR pointed out that `resolve_prefab_path` (+0xc0, backend)

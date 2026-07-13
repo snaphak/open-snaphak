@@ -1065,9 +1065,14 @@
   function tlBuildPatchedEntityJson(freshEntityJson) {
     var doc;
     try { doc = JSON.parse(freshEntityJson); } catch (e) { return null; }
-    if (!doc || typeof doc.entityDef !== 'object') return null;
-    if (typeof doc.entityDef.state !== 'object') doc.entityDef.state = {};
-    if (typeof doc.entityDef.state.edit !== 'object') doc.entityDef.state.edit = {};
+    if (!doc || typeof doc.entityDef !== 'object' || doc.entityDef === null) return null;
+    // NOTE the `=== null` checks: a freshly-placed Timeline serializes as `edit = NULL;` -> "state":{"edit":null}
+    // (or "state":null), and in JS `typeof null === 'object'`, so a bare `typeof x !== 'object'` guard would let
+    // the null through and the `edit[compKey] = ...` assignment below would throw "cannot set property of null"
+    // -- an UNCAUGHT throw that silently aborts the whole save (no toast, no commit). This was the webview-only
+    // "fresh timeline won't save until copy/paste or map save+reload" bug (Qt uses QJsonObject, never hits it).
+    if (typeof doc.entityDef.state !== 'object' || doc.entityDef.state === null) doc.entityDef.state = {};
+    if (typeof doc.entityDef.state.edit !== 'object' || doc.entityDef.state.edit === null) doc.entityDef.state.edit = {};
     var compKey = tlModel.isEncounter ? 'encounterComponent' : 'componentTimeLine';
     doc.entityDef.state.edit[compKey] = tlBuildComponentJson();
     return JSON.stringify(doc);
