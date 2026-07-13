@@ -6,6 +6,24 @@ engine layer. Engine-call bugs in `src/backend/` (used by *both* frontends) live
 [`backend-changes.md`](backend-changes.md); faithful-vs-divergent reproduction of the original's behavior
 lives in [`fidelity.md`](fidelity.md). Entries are chronological, newest first.
 
+## 2026-07-12 — Path-safety gate on prefab/folder names (contributor follow-up, shared with WebView)
+
+A contributor reviewing the WebView frontend PR pointed out that `resolve_prefab_path` (+0xc0, backend)
+is a plain string concat with no rejection of its own — a prefab/folder name containing `..` or a path
+separator would resolve outside the `prefabs\` tree before ever reaching `fopen`/`DeleteFileA`/
+`MoveFileA`/`CreateDirectoryA`. The note called out that the Qt path shares this exact behavior with the
+WebView frontend, not just the newer UI.
+
+`iface_resolve_prefab_path` (`sh_tabs.cpp`) is the single choke point every prefab/folder Win32 file op
+already funnels through (create, double-click load, list). Added `sh_valid_prefab_name()` there —
+rejects `..`, `/`, `\`, `:`, and anything over 200 chars; empty is still allowed (the directory-listing
+call passes `name=""`). The one real-risk call site was `sh_prefab_create_clicked`'s `QInputDialog`-typed
+name, passed straight through with no validation before; the listview double-click path was already
+low-risk (its `stem` comes from the app's own enumerated `*.json` filenames on disk, not raw input) but
+gets the same guard for free since it goes through the same wrapper. See
+[`webview-ui.md`](webview-ui.md) for the matching WebView-side fix (`poc_valid_name()`), landed the same
+day.
+
 ## 2026-07-12 — SnapStack decl-edits crashed DOOM after Play (the deferred-apply double-free) — root cause & fix
 
 ### Symptom

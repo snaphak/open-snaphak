@@ -86,6 +86,37 @@ for why decl-edits must NOT go through it).
 Newest first. Each dated entry covers one working session's worth of change; the undated **Baseline**
 entry at the bottom is the original POC buildout, before this doc tracked dates per entry.
 
+### 2026-07-12 -- Contributor follow-ups: path-safety gate, pinned WebView2 SDK, malloc null-check
+
+A contributor reviewing the WebView frontend PR flagged three low-risk, non-blocking items (plus two
+more covered in [`backend-changes.md`](backend-changes.md) and [`qt-changes.md`](qt-changes.md)):
+
+- **Path-safety gate.** `resolve_prefab_path` (+0xc0, backend) is a plain string concat with no
+  rejection of its own -- a prefab/folder name containing `..` or a path separator would resolve
+  outside the `prefabs\` tree before ever reaching `fopen`/`DeleteFileA`/`MoveFileA`/`CreateDirectoryA`/
+  `RemoveDirectoryA`. Only the JS side guarded this before. Added a native `poc_valid_name()` check
+  (rejects `..`, `/`, `\`, `:`, empty, and >200 chars) in `snaphak_ui_webview.cpp`, wired into the two
+  choke-point helpers every prefab/folder file op already funnels through (`poc_prefab_dir`,
+  `poc_prefab_file_path`) plus the one direct caller (`poc_apply_create_prefab`). The Qt frontend had
+  the identical gap (`iface_resolve_prefab_path` in `sh_tabs.cpp`) and got the equivalent gate,
+  `sh_valid_prefab_name()`, the same day -- see `qt-changes.md`.
+- **Pinned the WebView2 SDK version.** `build-webview.ps1` fetched NuGet's `index.json` and took
+  `$idx.versions[-1]` -- literally whatever NuGet listed last, prerelease or not. This wasn't
+  theoretical: the SDK actually cached on disk from an earlier run was `1.0.4071-prerelease`. Replaced
+  with a hardcoded `$wvPinnedVersion = "1.0.4078.44"` (the newest *stable* release at the time), to be
+  bumped deliberately going forward -- needed before wiring the webview build into CI.
+- **Null-checked the entity-list malloc.** `g_ents`/`g_tls` (`snaphak_ui_init`) were `malloc`'d with no
+  null-check before use. In practice a null `g_ents` was already non-fatal -- the one write site
+  (`poc_collect`) sits inside a `__try`/`__except`, so a null-deref got silently caught as a fault and
+  returned an empty list -- but that's an accidental safety net, not an intentional one, and it doesn't
+  cover every read site. Now `snaphak_ui_init` checks both allocations explicitly, logs, and aborts init
+  cleanly on failure instead of relying on SEH to paper over it.
+
+Also fixed as part of the same follow-up round: the "deferred applies run on the main-thread execution
+point" doc wording above (now reads correctly) and a `docs/backend-changes.md` confirmation, by decompile,
+that the Save-to-Decl setters (decl/classname/inherit/displayname) can't overflow on long input -- see
+that doc for the write-up.
+
 ### 2026-07-08 -- Timeline event-arg widgets, Save Timeline shipped, crash root-cause + workaround found
 
 - **Every event-arg kind now gets a real editable widget**, not just read-only text: bool (checkbox),
