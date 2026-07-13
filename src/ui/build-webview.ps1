@@ -35,13 +35,15 @@ $vcvars = "$vs\VC\Auxiliary\Build\vcvars64.bat"
 if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
 
 # --- 2. WebView2 SDK (NuGet) --------------------------------------------------------------------------
+# Pinned (not "latest") -- api.nuget.org's index.json lists prerelease builds interleaved with stable
+# ones, so $idx.versions[-1] (the literal last entry) can silently land a "-prerelease" SDK. Bump this
+# deliberately when picking up a new stable release.
+$wvPinnedVersion = "1.0.4078.44"
 $wvInclude = Join-Path $sdkDir "build\native\include"
 $wvLib     = Join-Path $sdkDir "build\native\x64\WebView2LoaderStatic.lib"
 if (-not (Test-Path (Join-Path $wvInclude "WebView2.h"))) {
-    Write-Host "Fetching Microsoft.Web.WebView2 SDK from NuGet..."
-    $idx = Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/index.json"
-    $ver = $idx.versions[-1]
-    Write-Host "  latest version: $ver"
+    Write-Host "Fetching Microsoft.Web.WebView2 SDK $wvPinnedVersion from NuGet..."
+    $ver = $wvPinnedVersion
     $url = "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/$ver/microsoft.web.webview2.$ver.nupkg"
     $zip = Join-Path $build "webview2.$ver.zip"
     Invoke-WebRequest -Uri $url -OutFile $zip

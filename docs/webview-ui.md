@@ -73,7 +73,13 @@ The frontend holds no engine addresses; it calls the backend only through the vt
 
 Heavy engine writes (Save, Delete, Select-in-editor) are snapshotted in the JS message callback and
 applied on the next think-loop frame under the loop mutex -- mirroring the Qt frontend's flag-word
-dispatch, which keeps them off the re-entrant callback and on the main-thread execution point.
+dispatch, which keeps them off the re-entrant callback. That think-loop frame runs on the **frontend's
+own UI/think-loop thread**, not DOOM's main thread -- the same thread where the inline class/inherit
+apply-guard (`sh_iface_class_inherit_ok`) fails open, exactly as it does for the Qt frontend. The path
+that actually runs on DOOM's main thread, guarded by `ExecuteCommandBuffer`, is the *scheduled* `+0xd0`
+apply (`clone_bss_apply`) -- a different, deferred path, kept only as an old-backend fallback and for
+prefab/mkcmd staging (see [`backend-changes.md`](backend-changes.md) and [`qt-changes.md`](qt-changes.md)
+for why decl-edits must NOT go through it).
 
 ## Changelog
 

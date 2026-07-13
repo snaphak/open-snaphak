@@ -6,6 +6,27 @@ where our own reimplementation was wrong, not the original SnapHak's behavior; a
 (or faithful reproduction of) the *original's* behavior belongs in [`fidelity.md`](fidelity.md)
 instead. Entries are chronological, newest first.
 
+## 2026-07-12 — Confirmed: the decl/classname/inherit/displayname Save setters cannot overflow (contributor follow-up)
+
+A contributor asked us to confirm `set_classname` (+0x78), `set_inherit` (+0x80), `set_displayname`
+(+0x128), and `rebuild_set_declsource` (+0x40) have headroom for arbitrarily long input — the same
+question that, for `PREFAB_TEMP_SIZE`, turned out to be a real stack-buffer overflow (see the
+2026-07-06 entry below). Worth checking rather than assuming.
+
+Live-RE against OG SnapHak (Beta 2, `snaphakui.dll`): the **Save to Decl** button's own click handler
+(`FUN_1800175a0` → `FUN_180017d00`) reads each Qt field (decl text, inherit, classname, displayname),
+computes its exact length, and passes that length explicitly into `FUN_180004a3c` for every one of the
+four fields. Decompiling `FUN_180004a3c` shows a standard **growable string assign** (SSO threshold at
+15 bytes, ~1.5x geometric growth, allocate-copy-free-old on overflow of current capacity) — the same
+shape as `std::string::assign`, not a fixed-size buffer. There is no length cap anywhere in this path;
+OG's own Save handler relies entirely on the assign function growing to fit, for all four fields.
+
+This is architecturally unrelated to the `PREFAB_TEMP_SIZE` bug, which was a fixed-size **stack struct**
+overflowed by a ctor call sequence — a completely different code shape from a dynamic string assign.
+Our clone's `set_classname`/`set_inherit`/`set_displayname`/`rebuild_set_declsource` call the engine's
+real assign functions directly (the same functions OG's own Save path calls), so they inherit the same
+safety. **No code change needed** — confirmed safe by decompile, not by assumption.
+
 ## 2026-07-12 — SnapStack decl-edits double-freed the committed decl-source block; fixed with a synchronous inline apply (`+0x290`)
 
 The long-standing SnapStack crash — run `acctargets` (or `bss`/`bsi`/`bsf`/`bsb`/`bse`), hit **Play**,
@@ -59,13 +80,15 @@ before a timeline save).
 > `+0xd0` path is retained only as an old-backend fallback and for prefab/mkcmd staging (`kind=1`), which
 > stages into the paste slot rather than rewriting a decl.
 
-**Still deferred (but DORMANT):** `ae_schedule_target_write` (`kind=3`, `wiring_cleandirect.c`) writes
-`state.edit.targets` onto the source entity's decl — but it **never fires in normal use**. `sh_target_any`
+**`ae_schedule_target_write` (`kind=3`) migrated to inline too, though it's DORMANT.** It writes
+`state.edit.targets` onto the source entity's decl — but it **never fires in normal use**: `sh_target_any`
 targets via SnapMap's native input/output-node logic and writes nothing to the decl (only `acctargets` ever
-produces a `targets` list). So it is NOT a live crash risk. It IS the natural primitive for a *future*
-UI-driven "add target" feature, and if wired up it MUST use the `+0x290` sync path — migrating it now is
-zero-risk future-proofing. Prefab Load/Place + `mkcmd` (`kind=1`) stage into the paste slot (different
-mechanism, never crashed). The WebView frontend's apply path is not yet on `+0x290`.
+produces a `targets` list). So it was never a live crash risk. It's the natural primitive for a *future*
+UI-driven "add target" feature, so it was migrated the same day (`ae_schedule_target_write` now calls
+`ae_apply_target_write` inline, SEH-guarded, no deferral) as zero-risk future-proofing — that future feature
+is crash-correct by default. Prefab Load/Place + `mkcmd` (`kind=1`) stage into the paste slot (different
+mechanism, never crashed, intentionally left on the deferred path). The WebView frontend's apply path is not
+yet on `+0x290`.
 
 **TODO:** quiet the `AE_APPLY_DIAG` / `AE_DESER_DIAG` / `+0x40 rebuild` / `C2 SYNC apply` diagnostics before
 release.

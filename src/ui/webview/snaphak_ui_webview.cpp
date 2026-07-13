@@ -192,6 +192,19 @@ static std::string w_to_utf8(const std::wstring &w)
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
     return s;
 }
+/* Path-safety gate (contributor-reported): resolve_prefab_path (+0xc0, backend) is a plain string concat
+ * with no rejection of its own -- a name containing ".." or a path separator would resolve outside the
+ * prefabs\ tree before ever reaching fopen/DeleteFileA/MoveFileA/CreateDirectoryA/RemoveDirectoryA. Only
+ * the JS side guarded this before. Applied to every raw prefab/folder name component the UI supplies,
+ * BEFORE it is concatenated into a prefix/filename and handed to resolve_prefab_path. */
+static bool poc_valid_name(const std::string &n)
+{
+    if (n.empty() || n.size() > 200) return false;
+    if (n.find("..") != std::string::npos) return false;
+    if (n.find('/') != std::string::npos || n.find('\\') != std::string::npos) return false;
+    if (n.find(':') != std::string::npos) return false;
+    return true;
+}
 static bool json_get_wstr(const std::wstring &j, const wchar_t *key, std::wstring &out)
 {
     std::wstring needle = L"\""; needle += key; needle += L"\"";
@@ -563,6 +576,10 @@ static void poc_apply_create_prefab()
         g_create_result = 2;
         return;
     }
+    if (!poc_valid_name(g_create_prefab_name)) {
+        poc_log("create-prefab: ABORT (name rejected -- '..' or path separator)");
+        return;
+    }
     char path[1024]; path[0] = '\0';
     std::string fname = g_create_prefab_name + ".json";
     if (!g_iface->vtbl->resolve_prefab_path(g_iface, "prefabs/", fname.c_str(), path, (int)sizeof path) || !path[0]) {
@@ -585,17 +602,20 @@ static void poc_apply_create_prefab()
  * prefab/folder file op below so they all agree on where a folder actually lives on disk. */
 static bool poc_prefab_dir(const std::string &folder, char *out, int cap)
 {
-    if (!g_iface || !g_iface->vtbl || !g_iface->vtbl->resolve_prefab_path) { if (cap) out[0] = '\0'; return false; }
+    if (cap) out[0] = '\0';
+    if (!folder.empty() && !poc_valid_name(folder)) return false;
+    if (!g_iface || !g_iface->vtbl || !g_iface->vtbl->resolve_prefab_path) return false;
     std::string prefix = folder.empty() ? "prefabs/" : ("prefabs/" + folder + "/");
-    out[0] = '\0';
     return g_iface->vtbl->resolve_prefab_path(g_iface, prefix.c_str(), "", out, cap) && out[0] != '\0';
 }
 static bool poc_prefab_file_path(const std::string &folder, const std::string &name, char *out, int cap)
 {
-    if (!g_iface || !g_iface->vtbl || !g_iface->vtbl->resolve_prefab_path) { if (cap) out[0] = '\0'; return false; }
+    if (cap) out[0] = '\0';
+    if (!folder.empty() && !poc_valid_name(folder)) return false;
+    if (!poc_valid_name(name)) return false;
+    if (!g_iface || !g_iface->vtbl || !g_iface->vtbl->resolve_prefab_path) return false;
     std::string prefix = folder.empty() ? "prefabs/" : ("prefabs/" + folder + "/");
     std::string fname = name + ".json";
-    out[0] = '\0';
     return g_iface->vtbl->resolve_prefab_path(g_iface, prefix.c_str(), fname.c_str(), out, cap) && out[0] != '\0';
 }
 static void poc_strip_trailing_sep(char *s)
@@ -1503,6 +1523,12 @@ extern "C" __declspec(dllexport) DWORD WINAPI snaphak_ui_init(LPVOID param_1)
     g_iface = args ? args->iface : nullptr;
     g_ents = (PocEnt *)malloc(sizeof(PocEnt) * POC_MAX_ENTS);
     g_tls  = (PocTl  *)malloc(sizeof(PocTl)  * POC_MAX_TLS);
+    if (!g_ents || !g_tls) {
+        poc_log("snaphak_ui_init: FATAL -- malloc failed for g_ents/g_tls, aborting init");
+        free(g_ents); g_ents = nullptr;
+        free(g_tls);  g_tls  = nullptr;
+        return 1;
+    }
     poc_read_version();
 
     poc_log("=== snaphak_ui_init (WebView2 POC, entities-deep) entered ===");

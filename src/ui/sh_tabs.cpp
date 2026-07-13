@@ -146,10 +146,24 @@ static std::string iface_serialize_selection(sh_iface *iface)
     if (n <= 0) return std::string();
     return std::string(buf, (size_t)n);
 }
+/* Path-safety gate (contributor-reported, shared with the WebView frontend's poc_valid_name): the
+ * resolver (+0xc0) is a plain string concat with no rejection of its own -- a typed prefab name
+ * containing ".." or a path separator would resolve outside prefabs\ before ever reaching fopen. Empty
+ * is allowed here (the directory-listing call passes name=""). */
+static bool sh_valid_prefab_name(const std::string &name)
+{
+    if (name.empty()) return true;
+    if (name.size() > 200) return false;
+    if (name.find("..") != std::string::npos) return false;
+    if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) return false;
+    if (name.find(':') != std::string::npos) return false;
+    return true;
+}
 static std::string iface_resolve_prefab_path(sh_iface *iface, const std::string &prefix,
                                              const std::string &name)
 {
     if (!iface || !iface->vtbl || !iface->vtbl->resolve_prefab_path) return std::string();
+    if (!sh_valid_prefab_name(name)) return std::string();
     char buf[1024]; buf[0] = '\0';
     int ok = iface->vtbl->resolve_prefab_path(iface, prefix.c_str(), name.c_str(), buf, (int)sizeof(buf));
     if (!ok || !buf[0]) return std::string();

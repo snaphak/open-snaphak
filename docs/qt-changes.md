@@ -127,13 +127,14 @@ both Timeline Save and the palette-timeline inherit-normalize). Three wins:
 
 ### Still TODO
 
-- **`ae_schedule_target_write` (kind=3) is DORMANT, not a live crash risk.** `sh_target_any` targets via
-  SnapMap's native input/output-node logic and writes **nothing** to the decl (an entity's state never shows
-  a `targets` list from any wiring action — that only comes from `acctargets`). So this decl-write path never
-  fires in normal use. It IS, however, the natural backend primitive for a *future* **UI-driven "add target"**
-  feature (write a real `state.edit.targets` from a SnapHak panel instead of a SnapMap wire) — and if that's
-  ever built, this function MUST commit through the `+0x290` sync path, or it reintroduces the identical
-  deferred double-free. Migrating it to inline now is cheap, zero-risk future-proofing (it doesn't fire today).
+- **`ae_schedule_target_write` (kind=3) was migrated to inline too, even though it's DORMANT.** `sh_target_any`
+  targets via SnapMap's native input/output-node logic and writes **nothing** to the decl (an entity's state
+  never shows a `targets` list from any wiring action — that only comes from `acctargets`). So this decl-write
+  path never fires in normal use and was never a live crash risk. It IS, however, the natural backend primitive
+  for a *future* **UI-driven "add target"** feature (write a real `state.edit.targets` from a SnapHak panel
+  instead of a SnapMap wire) — so it was migrated the same day (`ae_schedule_target_write` now commits inline,
+  SEH-guarded, no deferral) as cheap, zero-risk future-proofing: that future feature will be crash-correct by
+  default instead of reintroducing the identical deferred double-free.
 - **Pre-release cleanup:** quiet the diagnostics left on for this hunt (`AE_APPLY_DIAG` / `AE_DESER_DIAG`
   in `apply_engine.c`, the `+0x40 rebuild` trace in `iface_engine.c`, the `C2 SYNC apply` marker), and
   decide whether to keep or delete the unused `splice_decl_reflist` reference implementation.
