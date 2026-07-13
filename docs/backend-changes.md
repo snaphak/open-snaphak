@@ -104,8 +104,8 @@ is now inline, callers pass their own item text with no deep-copy/pending store.
 SEH-guarded, so an off-main reflect gap (if it ever occurred) degrades to `applied 0`, never a crash. The
 frontend routes all decl-edit ops through it (see [`qt-changes.md`](qt-changes.md)); the deferred `+0xd0`
 schedule is kept only as a fallback for an old backend without `+0x290`, and for `mkcmd`/prefab-paste
-(`kind=1`), which never crashed and is left deferred. A backend-log marker
-`C2 SYNC apply: N item(s) INLINE on this thread (op)` confirms the inline path at runtime.
+(`kind=1`), which never crashed and is left deferred. (During the hunt a `C2 SYNC apply: …` backend-log
+marker confirmed the inline path ran; removed in the 2026-07-13 diagnostics cleanup.)
 
 This supersedes the earlier "JSON round-trip vs in-memory node-tree edit" theory: our round-trip matched
 OG's, so it was never the problem.
@@ -132,11 +132,13 @@ produces a `targets` list). So it was never a live crash risk. It's the natural 
 UI-driven "add target" feature, so it was migrated the same day (`ae_schedule_target_write` now calls
 `ae_apply_target_write` inline, SEH-guarded, no deferral) as zero-risk future-proofing — that future feature
 is crash-correct by default. Prefab Load/Place + `mkcmd` (`kind=1`) stage into the paste slot (different
-mechanism, never crashed, intentionally left on the deferred path). The WebView frontend's apply path is not
-yet on `+0x290`.
+mechanism, never crashed, intentionally left on the deferred path). *(Update 2026-07-13: WebView's Save
+Timeline was migrated onto `+0x290` too — see the 2026-07-13 entry above; it was on the deferred `+0xd0`
+path when this entry was written.)*
 
-**TODO:** quiet the `AE_APPLY_DIAG` / `AE_DESER_DIAG` / `+0x40 rebuild` / `C2 SYNC apply` diagnostics before
-release.
+**DONE (2026-07-13):** the `AE_APPLY_DIAG` / `AE_DESER_DIAG` flags are now `0`, and the `+0x40 rebuild` and
+`C2 SYNC apply` markers plus the `normalize-timeline-inherit … committed` log were removed — the backend no
+longer emits the hunt-time diagnostics.
 
 ## 2026-07-08 — `apply_engine.c`: `ae_apply_one` could commit an empty class/inherit
 

@@ -166,10 +166,11 @@ both Timeline Save and the palette-timeline inherit-normalize). Three wins:
   instead of a SnapMap wire) — so it was migrated the same day (`ae_schedule_target_write` now commits inline,
   SEH-guarded, no deferral) as cheap, zero-risk future-proofing: that future feature will be crash-correct by
   default instead of reintroducing the identical deferred double-free.
-- **Pre-release cleanup:** quiet the diagnostics left on for this hunt (`AE_APPLY_DIAG` / `AE_DESER_DIAG`
-  in `apply_engine.c`, the `+0x40 rebuild` trace in `iface_engine.c`, the `C2 SYNC apply` marker), and
-  decide whether to keep or delete the unused `splice_decl_reflist` reference implementation.
-- **WebView UI:** the `+0x290` slot is frontend-agnostic (the WebView host drains the same `+0x1a0`
-  work-queue on its own UI thread), so the fix carries over — but the SnapStack command *logic* is still
-  Qt-only (and its apply path still calls the deferred `+0xd0`); porting it, ideally into the backend so both
-  frontends share one path, is the follow-up.
+- **Pre-release cleanup — DONE (2026-07-13):** the hunt diagnostics were stripped (`AE_APPLY_DIAG` /
+  `AE_DESER_DIAG` set to `0` in `apply_engine.c`; the `+0x40 rebuild` trace in `iface_engine.c`, the
+  `C2 SYNC apply` marker, and the `normalize-timeline-inherit` log removed). `splice_decl_reflist` (the
+  unused `+0x40`-route reference impl) was left in place, kept as reference.
+- **WebView UI:** the `+0x290` slot is frontend-agnostic, and as of 2026-07-13 WebView's **Save Timeline**
+  now uses it (no longer the deferred `+0xd0`). What's still Qt-only is the broader **SnapStack command
+  logic** (`snapstack.cpp`) — porting it into the backend so both frontends share one commit path is the
+  tracked follow-up (see [`backend-changes.md`](backend-changes.md) / [`webview-ui.md`](webview-ui.md)).

@@ -764,20 +764,6 @@ static void slot_rebuild_declsource(sh_iface *self, int id, const char *cstr)
     if (!g_decl_rebuild || !cstr) return;
     void *defsub = defsub_for_id(id);
     if (!defsub) return;
-    /* DIAG (remove before release): confirm the +0x40 rebuild path ran + dump the EXACT source committed,
-     * so the acctargets decl-source splice can be validated as well-formed decl syntax. This slot is shared
-     * by the manual Save + class/inherit handlers too, so it also traces those. */
-    {
-        char dbg[512];
-        int slen = (int)strlen(cstr);
-        _snprintf_s(dbg, sizeof dbg, _TRUNCATE, "+0x40 rebuild id=%d srclen=%d head='%.220s'", id, slen, cstr);
-        backend_log(dbg);
-        if (slen > 180) {
-            char dbg2[160];
-            _snprintf_s(dbg2, sizeof dbg2, _TRUNCATE, "+0x40 rebuild id=%d tail='%.100s'", id, cstr + slen - 100);
-            backend_log(dbg2);
-        }
-    }
     __try { g_decl_rebuild(defsub, cstr, 1); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }

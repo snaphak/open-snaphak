@@ -179,7 +179,7 @@
  * failed on the cut-off JSON. Fixed by raising APPLY_TEXT_CAP to 4 MB; retested against the prefabs that
  * were failing (all "applied 1/1" now) and live-tested up to 2 MB with no issue. Gated back off; flip to
  * 1 again if a similar silent-failure shows up. */
-#define AE_DESER_DIAG_ON  1
+#define AE_DESER_DIAG_ON  0
 #if AE_DESER_DIAG_ON
 #define AE_DESER_DIAG(...) do { char _ld[256]; \
     _snprintf_s(_ld, sizeof _ld, _TRUNCATE, __VA_ARGS__); backend_log(_ld); } while (0)
@@ -191,7 +191,7 @@
  * pointers + strlens + the decl-source head that ae_apply_one hands to DeclSourceRebuild/IdStrAssign, and
  * confirm each engine call returns -- ground truth on where a pointer/length goes bad, instead of guessing.
  * Flip to 0 to silence. */
-#define AE_APPLY_DIAG_ON  1
+#define AE_APPLY_DIAG_ON  0
 #if AE_APPLY_DIAG_ON
 #define AE_APPLY_DIAG(...) do { char _la[512]; \
     _snprintf_s(_la, sizeof _la, _TRUNCATE, __VA_ARGS__); backend_log(_la); } while (0)
@@ -986,12 +986,6 @@ static int slot_normalize_timeline_inherit(sh_iface *self, int id)
         if (tl_splice_portable_inherit(json, patched, TL_NORMALIZE_BUF_CAP) <= 0) { result = 0; goto done; }
 
         result = ae_apply_one(id, patched) ? 1 : 0;
-        if (result) {
-            char dbg[160];
-            _snprintf_s(dbg, sizeof dbg, _TRUNCATE,
-                        "normalize-timeline-inherit: id=%d placeholder -> " TL_PORTABLE_INHERIT " committed", id);
-            backend_log(dbg);
-        }
     } __except (EXCEPTION_EXECUTE_HANDLER) { result = 0; }
 done:
     if (json) free(json);
@@ -1178,13 +1172,6 @@ static int slot_apply_sync(sh_iface *self, const sh_apply_item *items, int count
     (void)self;
     if (!items || count <= 0 || count > APPLY_MAX_ITEMS) return 0;
     if (!ae_editor_session()) return 0;
-    {   /* distinctive marker so the log unambiguously shows the SYNC (inline) path ran, vs the deferred
-         * clone_bss_apply drain. (remove/quiet before release together with the AE_*_DIAG diagnostics.) */
-        char dbg[112];
-        _snprintf_s(dbg, sizeof dbg, _TRUNCATE, "C2 SYNC apply: %d item(s) INLINE on this thread (%s)",
-                    count, op_label ? op_label : "apply");
-        backend_log(dbg);
-    }
     int applied = 0;
     for (int i = 0; i < count; i++) {
         if (!items[i].text) continue;
