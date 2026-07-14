@@ -1499,7 +1499,17 @@ static void poc_think_loop()
 
         if (g_webview_ready) {
             bool ready = poc_editor_ready() != 0;
-            if (ready && !was_visible) { ShowWindow(g_hwnd, SW_SHOW); UpdateWindow(g_hwnd); poc_send_list(); was_visible = true; }
+            if (ready && !was_visible) {
+                ShowWindow(g_hwnd, SW_SHOW); UpdateWindow(g_hwnd); poc_send_list();
+                /* the editor screen just came back (Play just ended, or a map load/reload just completed --
+                 * editor_ready_poll (+0x88) is 1 in either case, 0 in the HUB/menu/Play). The webview host
+                 * window + its DOM/JS state are only HIDDEN across that gap, never destroyed, so any Timeline
+                 * Editor panel left open before Play/reload would otherwise keep showing stale cached data
+                 * with no signal to the user that it's stale. Force it closed here so the user must
+                 * re-select (and re-fetch) before editing. */
+                poc_post_json(L"{\"kind\":\"editorReopened\"}");
+                was_visible = true;
+            }
             else if (!ready && was_visible) { ShowWindow(g_hwnd, SW_HIDE); was_visible = false; }
 
             /* periodic auto tasks (~ every 10 frames = ~330 ms): list change poll, editor-selection sync,

@@ -1231,6 +1231,30 @@
     if (out.length === 0) h = '<div class="combo-empty">' + (items.length === 0 ? 'no known values -- free text is fine' : 'no matches') + '</div>';
     listEl.innerHTML = h;
   }
+  // Close/blank the Timeline Editor panel and drop the list-row highlight. Fired on 'editorReopened' (native
+  // sends this whenever the SnapMap editor screen just came back -- Play ended, or a map load/reload just
+  // completed; see the ready&&!was_visible transition in snaphak_ui_webview.cpp). Both paths can mutate
+  // entity state out from under a panel that was left open, so rather than guess whether the open timeline
+  // is still valid/current, unconditionally force a re-select -- the user can never mistake a blank panel
+  // for live data. Any unsaved local edit is discarded (matches doSaveTimeline's own "not dirty-tracked
+  // across a reload" assumption; the underlying data may have changed anyway, so there's nothing safe to
+  // preserve).
+  function tlCloseEditor() {
+    tlModel = null;
+    selectedTlEid = -1;
+    tlDirty = false;
+    var head = document.getElementById('tlHead');
+    var tabsEl = document.getElementById('tlTabs');
+    var bodyEl = document.getElementById('tlBody');
+    if (head) head.textContent = 'Select a timeline from the list.';
+    if (tabsEl) tabsEl.innerHTML = '';
+    if (bodyEl) bodyEl.innerHTML = '';
+    var revertBtn = document.getElementById('revertTimelineBtn');
+    var saveBtn = document.getElementById('saveTimelineBtn');
+    if (revertBtn) revertBtn.disabled = true;
+    if (saveBtn) saveBtn.disabled = true;
+    renderTimelineList();   // drops the now-stale highlighted row
+  }
   function renderTimelineEditor(d) {
     var head = document.getElementById('tlHead');
     var tabsEl = document.getElementById('tlTabs');
@@ -1410,6 +1434,21 @@
     loaded = null; updateDirty();
   }
   function hideEditor() { showPlaceholder('Select an entity from the list.'); }
+  // Close the Entity State panel and drop the entity-list selection entirely. Fired on 'editorReopened'
+  // (see tlCloseEditor's comment for the trigger: Play just ended, or a map load/reload just completed).
+  // Same risk as the Timeline panel, but WORSE: entity ids can be REUSED by a brand-new, unrelated entity
+  // after a reload. is_valid_id() in poc_apply_save (native) only catches a fully-deleted id -- it can't
+  // tell "this id is valid but now belongs to a DIFFERENT entity than the one this panel loaded". A stale
+  // Save would then silently overwrite that unrelated entity's decl/class/inherit. showPlaceholder already
+  // nulls `loaded` (which blocks Save via isDirty()), but clearing the selection too makes it visually
+  // unambiguous, not just functionally safe.
+  function closeEntityEditor() {
+    selectedEids = {};
+    anchorEid = -1;
+    primaryEid = -1;
+    updateSelDom();
+    showPlaceholder('Select an entity from the list.');
+  }
   // The state editor edits ONE decl, so it only shows for a single selection. 2+ selected -> a placeholder
   // that points at the right-click menu (the multi-entity actions). Called after any selection change.
   function refreshEditorForSelection(push) {
@@ -1524,6 +1563,15 @@
       var tlExist = {}; for (var ti=0; ti<allTimelines.length; ti++) tlExist[allTimelines[ti].eid] = true;
       if (selectedTlEid !== -1 && !tlExist[selectedTlEid]) selectedTlEid = -1;
       renderTimelineList();
+    } else if (d.kind === 'editorReopened') {
+      // the SnapMap editor screen just came back (Play ended, or a map load/reload just completed) --
+      // force EVERY panel that caches loaded-then-editable entity state closed, so nobody edits/saves
+      // stale data. Covers both the Timeline Editor (tlCloseEditor) and the Entity State panel
+      // (closeEntityEditor) -- audited 2026-07-13: Prefabs is file-based + reads live selection at
+      // click-time (no cached entity snapshot) and Camera Origin posts each change immediately (no
+      // load-then-save-later state), so neither needs this treatment.
+      tlCloseEditor();
+      closeEntityEditor();
     } else if (d.kind === 'state') {
       if (d.eid !== primaryEid) return;
       if (!d.auto) { showState(d); return; }   // explicit (non-auto) refresh always applies
