@@ -87,6 +87,52 @@ for why decl-edits must NOT go through it).
 Newest first. Each dated entry covers one working session's worth of change; the undated **Baseline**
 entry at the bottom is the original POC buildout, before this doc tracked dates per entry.
 
+### 2026-07-14 -- Timelines EXPLAIN box, entity-arg picker, live Runs-on selection, Clear stack 0, and stale-render fixes
+
+A polish pass over the Timelines and Entities tabs, built on top of the SnapStack port below.
+
+- **Entity-typed event args get a real picker.** An `entity`-typed arg (e.g. `ai/set_target`'s `target`)
+  used to fall into the generic plain-text bucket -- the one gap left in the "every arg kind gets a real
+  widget" work from 2026-07-08. It now renders the same combo dropdown as the "Runs on" picker, sourced
+  live from `allEntities` (`{display:"<id>: <name>", value:<id>}` pairs, same split the per-entity asset
+  dropdowns already use for display-name-vs-stored-value). No new native round-trip -- it reuses the
+  existing `.ev-arg-combo`/`tlRenderArgCombo` machinery decl/enum/asset args already share.
+- **Timeline EXPLAIN box.** Each event row gets a collapsed-by-default "What does this event do?" toggle
+  showing `sh_event_docs.h`'s author-facing summary + a per-arg description line, ported from Qt's
+  `tl_set_event_description`/`tl_arg_role` (`sh_timeline.cpp`). Shipped as a new `enumEventDocs` command
+  (`poc_send_event_docs`, same "static generated table, once per session" pattern as the event catalog),
+  cached client-side as `eventDocsByName`. Three UX options were mocked up and compared -- Qt's
+  always-visible block, this collapsed toggle (reusing the Entities tab's existing `.desc-panel` pattern
+  verbatim, same open/close/text-selection-guard behavior), and an arg-focus variant (a slim one-line
+  summary plus a hint that follows the currently-focused arg input). The collapsed toggle shipped as the
+  lower-risk, already-proven pattern; the arg-focus variant is on record as a possible future revisit.
+- **"Use current selection" wired.** The Runs-on picker's button now posts a fresh on-demand read of the
+  live SnapMap editor selection (not the periodic poll's cached count, since the click should reflect
+  whatever's selected *right now*) and requires exactly one entity, toasting a warning naming the actual
+  count (0 or N>1) otherwise.
+- **Two stale-render bugs found while testing the above, both fixed:**
+  - Re-clicking an already-selected entity (Entities tab) or an already-open timeline (Timelines tab) used
+    to silently discard any unsaved edit -- both list-click handlers unconditionally re-fetched and
+    re-applied fresh state, even when nothing had actually changed. Now a no-op when the click resolves to
+    what's already loaded; a genuinely different entity/timeline still loads normally. The Entities-tab fix
+    needed a new `loadedEid` (distinct from `primaryEid`, which the click handler reassigns *before* the
+    guard runs, so it could never tell "new" from "same" on its own).
+  - The Classname field could flash a false "invalid" red outline (or leave a real one uncorrected) on
+    selecting an entity -- `showState()` validates the just-loaded classname against `classItems`
+    synchronously, but `classItems` is scoped per-inherit and re-fetched *after* that validation already
+    ran, so it was checking against the *previous* entity's class list. Fixed by re-running the validity
+    check once the fresh `enumClasses` response actually lands.
+- **Clear stack 0.** A new context-menu entry next to "Push to stack 0", for a user working purely from the
+  UI who never touches the DOOM console (`sh cstk 0`). New `+0x2A8` `clear_stack` vtable slot, the
+  out-of-process counterpart to `push_to_stack` -- see [`backend-changes.md`](backend-changes.md).
+- **Toast wording cleanup.** Dropped "(dedup)" from the push-to-stack toast and "for Runs on" from the
+  selection-count warning -- both were internal/positional details a UI-only user has no context for.
+
+Confirmed live: entity-arg dropdown, EXPLAIN box open/close and content (including the no-doc and
+no-per-arg-doc fallback cases), Runs-on live-selection single/multi-select warnings, both stale-render
+fixes (edit survives a re-click; a genuinely different selection still loads), and the push/clear stack
+round trip.
+
 ### 2026-07-13 -- SnapStack ported to the backend: WebView gets the full `sh` command set
 
 WebView previously had **no** SnapStack ops — the whole subsystem was compiled into the Qt frontend. Ported
@@ -429,8 +475,8 @@ Genuinely open items only -- fixed bugs and completed work live in the Changelog
   crash half was our deferred-apply bug, not the engine. Fresh placement *and* reclass now save immediately,
   no workaround, verified in-game. See the 2026-07-13 Changelog entry above and the retraction in
   [`fidelity.md`](fidelity.md).
-- **"Use current selection"** (the Timeline "Runs on" picker's button) is a visual placeholder; needs a
-  new native round-trip to read the live 3D-editor selection.
+- **"Use current selection" (2026-07-14, RESOLVED).** The Timeline "Runs on" picker's button now reads the
+  live 3D-editor selection via a fresh on-demand native round-trip. See the 2026-07-14 Changelog entry.
 - **"Create New Timeline" stays disabled.** `sh_timeline.h` (the Qt port) documents that a clone-side
   create path is impossible (both a from-scratch spawn and a reclass-morph corrupted the map in that RE
   work) -- but a live decompile of the OG's `retranslateUi` this session found a real

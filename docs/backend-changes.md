@@ -6,6 +6,15 @@ where our own reimplementation was wrong, not the original SnapHak's behavior; a
 (or faithful reproduction of) the *original's* behavior belongs in [`fidelity.md`](fidelity.md)
 instead. Entries are chronological, newest first.
 
+## 2026-07-14 — `+0x2A8` `clear_stack` slot (WebView "Clear stack 0")
+
+A new vtable ext slot (ext 8), the out-of-process counterpart to the `+0x2A0` `push_to_stack` slot above:
+lets the WebView host empty the backend-owned SnapStack stack `index` from a context-menu click instead of
+needing the DOOM console (`sh cstk 0`). `sh_snapstack_clear_stack_backend()` mirrors `h_cstk`'s own logic
+(`snapstack.c`) and returns the pre-clear count so the caller can toast a confirmation. Same reasoning as
+`push_to_stack` for why Qt doesn't need this slot: its own Entities-tab context menu reaches
+`snapstack.cpp`'s in-process stores directly.
+
 ## 2026-07-13 — SnapStack ported into the shared backend (`snapstack.c` + `json_patch.c`); `json_patch` empty-`edit` fix; new store-management commands
 
 **What & why.** The entire SnapStack subsystem — the stack-of-stacks + named-group stores and all 20 `sh`
