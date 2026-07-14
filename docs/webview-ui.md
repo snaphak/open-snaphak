@@ -87,6 +87,24 @@ for why decl-edits must NOT go through it).
 Newest first. Each dated entry covers one working session's worth of change; the undated **Baseline**
 entry at the bottom is the original POC buildout, before this doc tracked dates per entry.
 
+### 2026-07-13 -- SnapStack ported to the backend: WebView gets the full `sh` command set
+
+WebView previously had **no** SnapStack ops — the whole subsystem was compiled into the Qt frontend. Ported
+the stores + all 20 `sh` handlers into the shared backend (`src/backend/snapstack.c` + `json_patch.c`), so
+`sh psel`/`sh acctargets`/`sh bss`/… now work under the WebView build. "Push to stack 0" (previously a stub)
+is wired to the backend stores via a new `+0x2A0` `push_to_stack` vtable slot. Registration is additive so a
+Qt build is unaffected (its own registrar still wins for the 20 names).
+
+The port surfaced a real backend bug that had broken *every* decl-edit op under WebView: `json_patch`
+produced invalid JSON when an entity's `state.edit` serialized as `null`/`{}` (an entity with no explicit
+overrides — everything shown on it is inherited), which the engine's lexer rejected (`applied 0/1`). Qt
+never hit it because QJson normalizes a null `edit` into `{}`. Fixed in `json_patch.c`; see
+[`backend-changes.md`](backend-changes.md) for the full root-cause. Also added backend-exclusive
+`chkstk`/`chkgrp`/`clrgrp` store-management commands and confirm toasts on the previously-silent ops.
+
+Verified in-game: 19 of the 20 ops (all but `mkcmd`, ported-but-unverified) plus the new commands, with Qt
+confirmed unaffected. Command reference: [`capabilities.md`](capabilities.md#snapstack-ops).
+
 ### 2026-07-13 -- Timeline parity with Qt: palette-inherit normalize, inline Save Timeline, and the fresh-save `typeof null` bug
 
 A focused session bringing WebView's Timeline handling to full parity with Qt. Three real fixes, found by
@@ -418,19 +436,18 @@ Genuinely open items only -- fixed bugs and completed work live in the Changelog
   work) -- but a live decompile of the OG's `retranslateUi` this session found a real
   `"Create New Timeline"` button and string in the *original* binary, which contradicts that assumption.
   Not re-investigated yet; flagging it here so the disabled state doesn't get treated as settled.
-- **Push to stack 0** is a stub, and more broadly **SnapStack must be ported to the backend** (TODO). The
-  SnapStack subsystem (`snapstack.cpp`) is entirely Qt-bound: its command handlers (acctargets/accl/
-  bss/bsi/bsf/bsb/bse/mkcmd/push-to-stack/…) live in the Qt frontend, so WebView has none of them. Beyond
-  the missing features, the *architecture* is the real issue: **each frontend independently chooses inline
-  (`+0x290`) vs deferred (`+0xd0`) at every decl-edit call site**, which is a latent-crash footgun — it bit
-  this cycle when WebView's Save Timeline silently regressed to the deferred double-free path after one line
-  was reverted (see the 2026-07-13 Changelog entry). The durable fix: **port the SnapStack command handlers
-  down into the backend** (`XINPUT1_3.dll`) as shared handlers — adding the ops WebView currently lacks —
-  so both frontends send high-level command intents through one commit path and can't diverge on the
-  inline/deferred choice. A cheaper interim hardening (not a substitute): make the backend's `+0xd0`
-  schedule commit `kind=0` decl-edits inline regardless, only truly deferring `kind=1` mkcmd staging, so no
-  frontend call site can pick the crashing path. Full rationale in
-  [`backend-changes.md`](backend-changes.md) (2026-07-13 entry).
+- **SnapStack ported to the backend (2026-07-13, RESOLVED).** The SnapStack subsystem (stores + all 20 `sh`
+  handlers) was Qt-bound (`snapstack.cpp`), so WebView had none of the ops. It now lives in the shared
+  backend (`src/backend/snapstack.c` + `json_patch.c`), registered additively before any frontend loads, so
+  WebView gets the full command set (`psel`/`acctargets`/`bss`/…) and Qt is unaffected (its own registrar
+  still wins for the 20 names). "Push to stack 0" is wired to the real backend stores via a new `+0x2A0`
+  `push_to_stack` slot. This also closes the inline-vs-deferred footgun for WebView: the shared handlers
+  commit every `kind=0` decl-edit through the synchronous `+0x290` `apply_sync` path. New backend-exclusive
+  `chkstk`/`chkgrp`/`clrgrp`/`snapstack_diag` commands were added for store inspection/management (WebView-
+  scoped — see the note below). Full design + the `json_patch` empty-`edit` fix are in
+  [`backend-changes.md`](backend-changes.md) (2026-07-13 entry). **Still open:** `mkcmd` is ported but not
+  live-verified; and **Phase 2** — retiring Qt's own `snapstack.cpp` copy so Qt also runs the shared
+  handlers/stores (which would make `chkstk`/`chkgrp`/`clrgrp` correct under Qt too, not just WebView).
 - Editing an entity's decl does not re-present it live in the editor (a decl commit updates the definition
   but not the already-spawned instance -- same as Save-to-Decl in the Qt UI). A live in-editor re-present
   via the engine's per-entity refresh is a possible future experiment.

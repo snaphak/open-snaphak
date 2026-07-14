@@ -53,14 +53,24 @@ Console variables; defaults shown in parentheses.
 Subcommands of `sh`, operating on numbered entity-id stacks and named groups. A numbered stack
 is one-shot scratch — apply/use ops drain it; move a set into a named group (`pop2g`) to reuse it.
 
+As of the 2026-07-13 backend port, the SnapStack stores + all 20 handlers live in the **shared
+backend** (`src/backend/snapstack.c` + `json_patch.c`), so they are available under **both** frontends —
+including the Qt-free WebView2 build, which previously had none of them. Registration is additive: the
+backend registers its copy before any frontend loads, and the Qt frontend still re-registers its own
+handlers over the 20 shared names, so Qt's behavior is unchanged. See
+[`backend-changes.md`](backend-changes.md) for the port's design + the deferred-apply/`json_patch` fixes.
+
+**The 20 OG subcommands** (usage `sh <op> <stack> …`; a numbered stack index; several ops also accept a
+letter-first **group name** in place of the stack index):
+
 | Op | What it does |
 |---|---|
 | `psel` | Push the current editor selection onto the stack, then clear the selection. |
-| `popsel` | Add the stacked ids back into the editor selection. |
+| `popsel` | Add the stacked ids (or a named group's) back into the editor selection. |
 | `phov` | Push the hovered entity onto the stack (de-duplicated). |
 | `pr` | Push every valid id in an inclusive `[lo..hi]` range. |
-| `pg` | Push a named group's ids onto the stack. |
-| `pop2g` | Move the stack into a named group. |
+| `pg` | Push a named group's ids onto the stack. `sh pg <grp>` alone implies stack 0. |
+| `pop2g` | Move the stack into a named group. `sh pop2g <grp>` alone implies stack 0. |
 | `cstk` | Empty the stack. |
 | `filtinh` | Keep only the stacked ids whose inherit matches the argument. |
 | `filtcls` | Keep only the stacked ids whose classname matches the argument. |
@@ -75,6 +85,19 @@ is one-shot scratch — apply/use ops drain it; move a set into a named group (`
 | `accl` | Pop the last id as the receiver; reference-assign the remaining ids to it. |
 | `acctargets` | Pop the last id; append the remaining ids to its `targets` list. |
 | `mkcmd` | Synthesize a reusable command-entity macro from the stacked ids. |
+
+**New SnapStack+ commands** (backend-exclusive — not part of OG's 20; added with the port). These read/
+manage the backend's own stores, so they reflect live state under the **WebView** build (where every
+SnapStack op runs in the backend). Under the **Qt** build the ops use Qt's own in-process stores, so
+these would report the backend's separate (empty) copy — effectively WebView-only until Qt's duplicate is
+retired. Output goes to the `~` console with a summary toast.
+
+| Op | What it does |
+|---|---|
+| `chkstk [N]` | Inspect stack `N` (ids + id-strings); omit `N` to summarize every non-empty stack. |
+| `chkgrp [name]` | Inspect a group's ids; omit `name` to list all groups + counts. |
+| `clrgrp <name>\|*` | Delete a named group entirely (`*` deletes all). |
+| `snapstack_diag` | Report, per subcommand, which loaded DLL currently owns the handler. |
 
 ## GUI tabs
 

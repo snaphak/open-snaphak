@@ -6,6 +6,74 @@ where our own reimplementation was wrong, not the original SnapHak's behavior; a
 (or faithful reproduction of) the *original's* behavior belongs in [`fidelity.md`](fidelity.md)
 instead. Entries are chronological, newest first.
 
+## 2026-07-13 — SnapStack ported into the shared backend (`snapstack.c` + `json_patch.c`); `json_patch` empty-`edit` fix; new store-management commands
+
+**What & why.** The entire SnapStack subsystem — the stack-of-stacks + named-group stores and all 20 `sh`
+subcommand handlers (`psel`/`popsel`/`phov`/`pr`/`pg`/`pop2g`/`cstk`/`filtinh`/`filtcls`/`bss`/`bsi`/`bsf`/
+`bsb`/`bse`/`bsin`/`bscls`/`bsincls`/`accl`/`acctargets`/`mkcmd`) — lived only in the Qt frontend
+(`src/ui/snapstack.cpp`), registered at Qt startup. The Qt-free WebView host never called that registrar, so
+`sh psel`/`sh acctargets`/etc. simply didn't exist under WebView. Ported the stores + all 20 handlers to
+pure C in the shared backend (`src/backend/snapstack.c`), backed by a purpose-built dotted-path JSON mutator
+(`json_patch.c`) that generalizes `apply_engine.c`'s existing raw-splice technique instead of pulling in a
+JSON library (the backend deliberately carries none). Registered **additively** from `ui_bridge.c` before
+any frontend loads: the cmd-map overwrites on duplicate name, so under a Qt build Qt's own registrar still
+runs afterward and wins for all 20 names — Qt's behavior is unchanged; only a frontend with no registrar of
+its own (WebView) ends up running the backend copy. This kills the inline-vs-deferred apply footgun for
+WebView (each frontend previously chose the apply path at its own call sites; WebView's Save-Timeline
+regressed once from exactly that) — the shared handlers commit through one path.
+
+**Second attempt — the first port (commit `e7ee129`, 2026-07-09) was reset out.** That attempt predated two
+fixes since established on the Qt/WebView side and carried both bugs: (1) every apply-op scheduled via the
+**deferred `+0xd0`** path — the same split-commit-across-threads pattern that double-frees the decl-source
+block on map teardown (see the 2026-07-12 deferred-apply writeup below); (2) several persistent `static`
+scratch buffers (256 KB × multiple call sites, a 1 MB idstr table) — the same BSS-footprint pattern that
+caused the controller-freelook regression on the `+0x298` slot. This re-port fixes both: every `kind=0`
+decl-edit op now tries the **synchronous `+0x290` `apply_sync`** first (OG-faithful inline commit), falling
+back to the deferred schedule only on an old backend without the slot; `mkcmd` (`kind=1` prefab paste, a
+different operation that never crashed) stays on the deferred path, matching Qt's convention. All scratch
+buffers are heap-allocated transiently per call (`malloc`/`free`), never `static`/BSS.
+
+**The bug that broke every decl-edit under WebView — `json_patch` mishandled a non-object `edit`.**
+Live-tested `sh bss`/`sh acctargets` both returned `applied 0/1` with no decl change. The engine's own
+deserialize `Lexer` rejected the patched text. Root cause (found by dumping the exact bytes fed to the
+lexer): an entity you haven't hand-edited serializes its `state.edit` **overrides** block as `null` (or `{}`)
+via the `+0xc8` serialize — everything the editor *shows* on it is **inherited** from its decl, not an
+explicit override. When `json_patch` had to create a path segment (`targets`, `renderModelInfo.model`, …)
+under a non-object `edit`, it spliced a bare `"key":value` **member** where a braced **object value** was
+required, producing invalid `"edit":"targets":{…}`. Qt never hit this because QJson silently normalizes a
+null `edit` into `{}` before patching — the exact JS-`typeof null` / null-safety class of gap, one layer
+down in C. Fixed in `json_patch.c`: (a) the missing-path branches in `json_walk_set` / `json_walk_upsert_
+reflist` now wrap the built chain in braces (`{…}`) so it's a valid object value for both the splice-into-a-
+non-object and insert-new-member cases; (b) `json_insert_member`'s empty-object test corrected from
+`p == obj_close` (always false — `obj_close` points *past* the `}`) to `*p == '}'`, which had been appending
+a trailing comma (`{"k":v,}`) on an empty `{}` edit. Verified offline against a captured real entity plus
+null/empty/missing-`edit` variants, then live: `bss`/`acctargets` apply `1/1`.
+
+**`+0x2A0` `push_to_stack` slot.** A new vtable ext slot (ext 7) lets an out-of-process frontend (the WebView
+host) push onto the backend-owned stack a `sh <subcommand>` typed afterward will see — wiring WebView's
+"Push to stack 0" context action to the real stores. (The reverted attempt used `+0x290` for this; that
+offset is now `apply_sync`, so this is a fresh append, not a reuse — the append-only vtable discipline keeps
+an older Qt `snaphakui.dll` ABI-compatible: no existing slot offset moved.)
+
+**New backend-exclusive SnapStack+ commands** (`chkstk` / `chkgrp` / `clrgrp`) + toast polish. Store
+inspection/management the OG set lacked: `chkstk [N]` lists a stack (or summarizes all), `chkgrp [name]`
+lists a group (or all groups), `clrgrp <name>|*` deletes a group. They operate on the backend stores
+(correct under WebView; under Qt the ops use Qt's own stores, so these read the backend's separate copy — a
+known store-duplication limitation until Qt's copy is retired). Also added confirm toasts to previously
+silent ops (`cstk`, `phov`, `pop2g`, `pg` receiver/stack naming, `accl`/`acctargets` receiver toast) since a
+stack/group op is otherwise invisible without a `chk*`, and a `pg`/`pop2g` single letter-first arg now
+implies stack 0 (`sh pg mygroup` == `sh pg 0 mygroup`), consistent with how the operand resolver treats a
+letter-first arg as a group everywhere else.
+
+**Verified in-game (WebView build):** `psel`, `popsel`, `phov`, `cstk`, `pr`, `pg`, `pop2g`, `filtinh`,
+`filtcls`, `bss`, `bsi`, `bsf`, `bsb`, `bse`, `bsin`, `bscls`, `bsincls`, `accl`, `acctargets`, plus the new
+`chkstk`/`chkgrp`/`clrgrp`/`snapstack_diag`, and Qt confirmed unaffected. **`mkcmd` is ported (a faithful C
+port of Qt's handler + the byte-exact prefab template) but not live-verified** — flagged as a TODO.
+
+**Next (Phase 2, follow-up):** retire Qt's own `snapstack.cpp` copy so the Qt frontend also runs the shared
+backend handlers/stores — unifying both frontends on one implementation and making `chkstk`/`chkgrp`/`clrgrp`
+correct under Qt too. Plus new commands the shared home enables (e.g. `chkstk`-adjacent tooling).
+
 ## 2026-07-13 — Palette-Timeline portable-inherit normalize moved into a shared backend slot (`+0x298`); the decl-source blob lags the raw inherit by one commit
 
 **What & why.** A Timeline placed from the in-game SnapMap palette is spawned from a repurposed

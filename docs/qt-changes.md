@@ -6,6 +6,19 @@ engine layer. Engine-call bugs in `src/backend/` (used by *both* frontends) live
 [`backend-changes.md`](backend-changes.md); faithful-vs-divergent reproduction of the original's behavior
 lives in [`fidelity.md`](fidelity.md). Entries are chronological, newest first.
 
+## 2026-07-13 — SnapStack ported into the backend (additive) — Qt behavior unchanged
+
+The SnapStack stores + all 20 `sh` handlers were ported from the Qt frontend (`src/ui/snapstack.cpp`) into
+the shared backend (`src/backend/snapstack.c`), so the Qt-free WebView build gets them too. This is purely
+**additive to Qt**: `src/ui/snapstack.cpp` is untouched, and the backend registers its copy *before* the
+frontend loads, so Qt's own registrar (`snaphak_ui_init.cpp` → `snapstack.cpp`) still runs afterward and
+overwrites all 20 names with Qt's handlers — a Qt build runs exactly the same code it always did, against
+its own in-process stores. Only the new backend-exclusive commands (`chkstk`/`chkgrp`/`clrgrp`/
+`snapstack_diag`, which Qt never registers) stay backend-owned under Qt; those read the backend's separate
+stores, so under Qt they don't reflect Qt's live stack/group state (a store-duplication limitation resolved
+when Qt's own copy is eventually retired — Phase 2). Run `sh snapstack_diag` in-game to see, per command,
+which DLL currently owns each handler. Full design + the port's fixes: [`backend-changes.md`](backend-changes.md).
+
 ## 2026-07-13 — `sh_timeline_normalize_inherit` now routes through the shared backend slot (`+0x298`)
 
 The palette-Timeline portable-inherit normalize (rewrite the placeholder inherit
