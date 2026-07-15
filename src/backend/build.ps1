@@ -66,6 +66,10 @@ param(
                            "../fault_shield/fault_record.c", "../fault_shield/shield_sigs.c",
                            "../fault_shield/fault_shield.c"),
     [string]$Out = "XINPUT1_3.dll",
+    # -Def: the .def pinning THIS output's export ordinals. Defaults to xinput1_3.def; pass
+    # xinput1_4.def with -Out XINPUT1_4.dll for the DOOM-build-that-imports-1_4 variant (same
+    # xinput_proxy.c bodies, different exported ordinal set -- see xinput1_4.def's header comment).
+    [string]$Def = "xinput1_3.def",
     # -Diag: build the DIAGNOSTIC variant -- adds the catch-all crash + environment logger (shield_diag.c)
     # under /DSNAPHAK_DIAG. Same output name (XINPUT1_3.dll) so an end-user just swaps it in, reproduces the
     # crash, and sends snaphak_diag.log. A TROUBLESHOOTING build only -- not for distribution.
@@ -110,7 +114,7 @@ $implib  = $Out -replace '\.dll$', '.lib'   # import lib + .exp -> build\obj\bac
 # Output goes to the TOP-LEVEL open-snaphak\build\ (out of src\), via paths RELATIVE to cwd=$here so the
 # quoted-trailing-backslash cmd footgun (see above) is avoided: ..\..\ from src\backend\ is the repo root.
 # /DEF:xinput1_3.def + /I..\common stay cwd-relative (load-bearing -- the .def pins the XInput ordinals).
-$cl = "cl /nologo /LD /O2 /W3 /MT $defs /Fo..\..\build\obj\backend\ /I..\common $srcArgs /Fe:..\..\build\$Out /link /DEF:xinput1_3.def /IMPLIB:..\..\build\obj\backend\$implib shell32.lib"
+$cl = "cl /nologo /LD /O2 /W3 /MT $defs /Fo..\..\build\obj\backend\ /I..\common $srcArgs /Fe:..\..\build\$Out /link /DEF:$Def /IMPLIB:..\..\build\obj\backend\$implib shell32.lib"
 
 $cmd = "cd /d `"$here`" && `"$vcvars`" && $cl"
 # vcvars64.bat emits a spurious "'vswhere.exe' is not recognized" line on stderr (it probes a bare-PATH
@@ -130,4 +134,16 @@ if ($Diag) {
 } else {
     # a -Diag build emits shield_diag.obj into build\obj\backend; keep the release obj dir diag-free.
     Remove-Item (Join-Path $outDir "obj\backend\shield_diag.obj") -ErrorAction SilentlyContinue
+}
+
+# On a plain default invocation (the one both top-level build scripts use), ALSO build the
+# XINPUT1_4-named variant: DOOM builds from after the April 2024 patch import XINPUT1_4.dll instead of
+# XINPUT1_3.dll (confirmed via dumpbin -- see xinput1_4.def), so shipping both lets one package serve
+# either DOOM build. Same $Sources, same xinput_proxy.c bodies (already 1.4-API-shaped internally),
+# just a different output name + ordinal-pinning .def. Self-invokes rather than duplicating the cl
+# command; guarded by the $Out/$Def check so the recursive call (which passes non-default values)
+# does not itself recurse again.
+if (-not $Diag -and $Out -eq "XINPUT1_3.dll" -and $Def -eq "xinput1_3.def") {
+    Write-Host "[build] also building the XInput1_4-named variant (post-April-2024 DOOM builds import this name instead)..."
+    & $MyInvocation.MyCommand.Path -Sources $Sources -Out "XINPUT1_4.dll" -Def "xinput1_4.def"
 }

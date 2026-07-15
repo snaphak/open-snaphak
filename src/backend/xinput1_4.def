@@ -1,0 +1,24 @@
+; xinput1_4.def -- pin the XInput export ORDINALS to match the real XInput1_4.dll.
+;
+; The April 2024 DOOM (2016) patch relinked DOOMx64vk.exe to import XINPUT1_4.dll instead of
+; XINPUT1_3.dll (confirmed via dumpbin /imports: "Ordinal 2", "Ordinal 3" under XINPUT1_4.dll -- the
+; same two functions as before, XInputGetState + XInputSetState, just under the new DLL name). Our
+; XINPUT1_3.dll proxy is a byte-perfect no-op on that build: Windows never even looks for a file by
+; that name, so our DllMain never runs. This .def is the SAME xinput_proxy.c bodies (they already
+; forward every real call to the System32 XInput1_4.dll internally -- see xinput_proxy.c), built as a
+; SECOND backend output (XINPUT1_4.dll) so both DOOM builds are served: each game exe only ever loads
+; the proxy whose name matches what it actually imports.
+;
+; Ordinals verified against the real C:\Windows\System32\XInput1_4.dll (dumpbin /exports, this
+; session): 2=GetState 3=SetState 4=GetCapabilities 5=Enable 7=GetBatteryInformation 8=GetKeystroke.
+; Ordinal 6 in 1.3 was XInputGetDSoundAudioDeviceGuids; in 1.4 that ordinal is a DIFFERENT,
+; incompatible function (the real DSound-GUIDs equivalent moved to XInputGetAudioDeviceIds, a
+; different signature, at ordinal 10) -- so that export is DROPPED here rather than mis-pinned. DOOM
+; doesn't import ordinal 6 either way (confirmed: it only pulls 2 and 3).
+EXPORTS
+    XInputGetState                  @2
+    XInputSetState                  @3
+    XInputGetCapabilities           @4
+    XInputEnable                    @5
+    XInputGetBatteryInformation     @7
+    XInputGetKeystroke              @8

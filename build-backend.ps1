@@ -12,4 +12,4 @@ $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$here\src\backend\build.ps1" @Rest
 if ($LASTEXITCODE -ne 0) { throw "backend build failed" }
-Write-Host "built: build/XINPUT1_3.dll"
+Write-Host "built: build/XINPUT1_3.dll + build/XINPUT1_4.dll"

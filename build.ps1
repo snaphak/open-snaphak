@@ -19,5 +19,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$here\src\backend\build
 if ($LASTEXITCODE -ne 0) { throw "backend build failed" }
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$here\src\ui\build.ps1"
 if ($LASTEXITCODE -ne 0) { throw "frontend build failed" }
-Write-Host "built: build/XINPUT1_3.dll + build/webview/snaphakui.dll"
+Write-Host "built: build/XINPUT1_3.dll + build/XINPUT1_4.dll + build/webview/snaphakui.dll"
 Write-Host "package with: package.ps1"
