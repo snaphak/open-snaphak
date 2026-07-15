@@ -33,8 +33,10 @@ auto-open).
 
 The frontend renders in Microsoft's **WebView2 runtime** rather than bundling a UI toolkit. It's part of
 Windows 11 and is pushed to most Windows 10 machines via Microsoft Edge. On a machine that somehow lacks it, the
-Studio window can't render — so `snaphak.exe` should ensure it (Microsoft ships a small "evergreen bootstrapper"
-the installer can run to install the runtime if absent). *(Tracked as an installer follow-up.)*
+Studio window can't render — so **`snaphak.exe` ensures it**: on `install` (and `update`) it checks the runtime's
+registry key and, if it's absent, offers to download + run Microsoft's evergreen bootstrapper (`/silent /install`;
+auto under `--yes`). This never blocks the mod install — the DLLs deploy regardless; on the common case
+(Win11 / updated Win10) the check is a no-op since the runtime is already present.
 
 ## What's deliberately dropped
 

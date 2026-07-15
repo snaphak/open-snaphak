@@ -147,7 +147,9 @@ func cmdInstall(f flags) error {
 	if err := saveRecord(rec); err != nil {
 		return fmt.Errorf("installed the files, but couldn't write the install record (%v) -- uninstall may not fully clean up", err)
 	}
-	fmt.Printf("Done. SnapHak %s installed. Launch DOOM and open the SnapMap editor.\n", rec.Version)
+	fmt.Printf("Done. SnapHak %s installed.\n", rec.Version)
+	ensureWebView2Runtime(f) // the HTML UI renders in the WebView2 runtime -- ensure it's present (never fails the install)
+	fmt.Println("Launch DOOM and open the SnapMap editor.")
 	return nil
 }
 
