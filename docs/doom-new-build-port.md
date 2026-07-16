@@ -56,6 +56,26 @@ by anyone.
 Most of the remaining work is: *find the moved thing in Ghidra, re-derive it (portably where possible),
 wire it, un-gate the feature, test.* Same playbook every time.
 
+### How the code approach changed (pre-patch → now)
+
+If you know the pre-patch code, this is the important part — the *code structure*, not just the numbers,
+is different now, on purpose.
+
+| Concern | Pre-patch code | This branch (new-build) | Why the change |
+|---|---|---|---|
+| **Editor object** | one hard-coded RVA (`EDITOR_SINGLETON_RVA`) to the in-module singleton | **resolved at runtime** — identify by exact vtable (`GetCameraOrigin` at vtable+0xd8) + scan `.data` for the global pointer to it (`sh_scan_for_editor` / `editor_base`) | the object moved *and* went heap/8-aligned; a runtime identity has **no RVA to maintain** across future patches |
+| **Engine functions** | signatures where present, else a hard-coded RVA "fallback" that was assumed correct | **signature first → stable-delta-off-a-signatured-anchor → hard-coded RVA only as last resort, always prologue-guarded** | signatures auto-adapt; a delta off a sig anchor (e.g. `IdStrOpAssign = IdStrCtor+0x700`) stays portable; a bare RVA does not |
+| **Calling a resolved address** | called directly; assumed valid | **validate before calling** (prologue bytes / vtable identity), and if it doesn't match, **degrade to NULL/no-op** | a call through a *wrong* address runs unrelated code that **corrupts the SEH frame**, so a plain `__try` can't even catch it — you get a hard crash-to-desktop. Validating first is the only safe option (see `sh_typeinfo_get_declmgr`, the `IdStrOpAssign` derive) |
+| **A feature whose address isn't re-derived yet** | n/a (everything was assumed working) | **explicitly gated to a safe no-op** behind an `SH_NEWBUILD_*` flag | lets the mod stay stable + shippable while features are ported one at a time, instead of one stale call taking down the whole editor |
+
+**The through-line:** pre-patch was "hard-code the addresses and assume they're right." Because a DOOM
+update shifts everything at once, that approach means the *next* update breaks (and crashes) everything
+again. This branch deliberately moves toward **self-adapting resolution where possible, and fail-soft
+(validate → no-op) where not** — so a future patch degrades gracefully (empty panel / inert button)
+instead of crashing, and buys time to re-derive. The offsets *inside* the editor/entity/selection structs
+did **not** change (see [#4](#4-entity--selection--map-offsets--all-unchanged-from-og)); the breakage was
+almost entirely stale **top-level addresses** + one of our own validators.
+
 ---
 
 ## Architecture recap (1 minute)
