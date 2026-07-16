@@ -469,6 +469,35 @@ const sig_entry BACKEND_ENGINE_SIGNATURES[] = {
        * one signature locates it on either: 20 bytes, no wildcards, scan-unique on both. */
       "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 F8 E0 FF",
       0x1A57A60u },
+    /* --- engine fns that used to be reached by a hard-coded RVA off the module base ---------------------
+     * Each of these was a `g_doom_base + <constant>` call, i.e. correct on exactly ONE DOOM build and
+     * silently pointing into an unrelated function on any other. All six are byte-identical across the
+     * pre- and post-April-2024 builds, so one signature locates each on either. Patterns are the shortest
+     * instruction-aligned prefix that is scan-unique on BOTH builds (a longer pattern is more to break; a
+     * shorter one risks identifying by luck rather than identity). */
+    { "PrefabCtor",          /* idSnapEntityPrefab ctor -- prefab-from-selection */
+      "4C 8B DC 49 89 4B 08 53 48 83 EC 30 49 C7 43 E8 FE FF FF FF",
+      0x54D0A0u },
+    { "PrefabPopulate",      /* populate a prefab from the editor selection (returns char success) */
+      "40 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 40 F7 FF FF 48 81 EC C0 "
+      "09 00 00 48 C7 85 10 01 00 00 FE FF FF FF",
+      0x54E410u },
+    { "PrefabDtor",          /* idSnapEntityPrefab dtor */
+      "40 57 48 83 EC 30 48 C7 44 24 20 FE FF FF FF 48 89 5C 24 40 48 8B F9 48 "
+      "81 C1 20 01 00 00",
+      0x51D870u },
+    { "EntityDeshare",       /* COW make-unique: de-share an entity's 0x6f8 block before mutating it */
+      "40 57 48 83 EC 30 48 C7 44 24 20 FE FF FF FF 48 89 5C 24 48 48 8B F9 48 "
+      "8B 01 83 38 01",
+      0x52C920u },
+    { "RemoveFromSelection", /* remove an id from the editor selection (the Entities ctx-menu Delete) */
+      "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 8B DA 48 8B 09 48 81 C1 E0 05 00 "
+      "00",
+      0x59FDA0u },
+    { "DeclPureFind",        /* pure decl-find (the class/inherit dropdown's live enumeration path) */
+      "40 57 48 83 EC 40 48 C7 44 24 20 FE FF FF FF 48 89 5C 24 50 48 89 74 24 "
+      "58 48 8B DA 48 8B F1",
+      0x18017A0u },
     /* --- console-command + cvar registration infra (clone of XINPUT1_3 FUN_1800229b1) --- */
     { "Printf",            /* idCommon message-dispatch (0x1a08e80); every handler's console output via
                             * the Printf wrapper (clone of OG FUN_180006380 -> (1, fmt, &va)) routes here */

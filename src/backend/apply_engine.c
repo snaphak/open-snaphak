@@ -1249,15 +1249,20 @@ int sh_apply_engine_install(const sig_result *results, size_t n, const uint8_t *
     g_buffer_cmd   = (buffer_cmd_fn)      sig_addr_by_name(results, n, "BufferCommandText");
     g_add_command  = (add_command_fn)     sig_addr_by_name(results, n, "AddCommand");
 
-    /* the prefab-from-selection serialize engine fns (+0xb0). These jumptable/inline-prone leaves
-     * resolve by FALLBACK RVA off module_base (re-derive-tagged like the editor singleton); a wrong/shifted
-     * offset just makes the serialize SEH-fail -> a clean 0-length result, never a crash. */
-    if (module_base) {
-        g_prefab_ctor     = (prefab_ctor_fn)    (module_base + PREFAB_CTOR_RVA);
-        g_prefab_populate = (prefab_populate_fn)(module_base + PREFAB_POPULATE_RVA);
-        g_prefab_dtor     = (prefab_dtor_fn)    (module_base + PREFAB_DTOR_RVA);
-        g_deshare         = (ent_deshare_fn)    (module_base + ENT_DESHARE_RVA);
-    }
+    /* The prefab-from-selection serialize engine fns (+0xb0) + the COW de-share. All four now resolve by
+     * SIGNATURE, like everything else here.
+     *
+     * They previously took `module_base + <constant>`, described as "jumptable/inline-prone leaves the
+     * byte-sig scanner cannot reliably anchor". That is not a property of these functions -- all four sign
+     * uniquely at 20-38 bytes on both DOOM builds; the scanner had simply never been pointed at them. The
+     * same comment also claimed a shifted offset "just makes the serialize SEH-fail -> a clean 0-length
+     * result, never a crash". It would not: a call through a wrong address runs whatever function now lives
+     * there, which corrupts the SEH frame, so __try cannot catch the result at all. Unresolved now stays
+     * NULL and the call sites' existing null-checks (see :1128, :817) report the gap instead. */
+    g_prefab_ctor     = (prefab_ctor_fn)    sig_addr_by_name(results, n, "PrefabCtor");
+    g_prefab_populate = (prefab_populate_fn)sig_addr_by_name(results, n, "PrefabPopulate");
+    g_prefab_dtor     = (prefab_dtor_fn)    sig_addr_by_name(results, n, "PrefabDtor");
+    g_deshare         = (ent_deshare_fn)    sig_addr_by_name(results, n, "EntityDeshare");
 
     char line[256];
     _snprintf_s(line, sizeof line, _TRUNCATE,

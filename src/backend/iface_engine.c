@@ -1755,8 +1755,12 @@ int sh_iface_engine_install(const sig_result *results, size_t n, const uint8_t *
      * Either may be NULL -> the DIAG logs "unresolved" once and disables itself. */
     g_ie_map_getter   = (void *(*)(void *))sig_addr_by_name(results, n, "MapGetter");
     g_ie_gamemgr_slot = sh_resolve_gamemgr_slot(results, n, module_base);
+    /* RemoveFromSelection (the Entities ctx-menu Delete) now resolves by SIGNATURE. It was a
+     * `module_base + 0x59fda0` fallback, described as "a jumptable-dispatch leaf the byte-sig scanner
+     * cannot reliably anchor" -- but it signs uniquely at 25 bytes on both DOOM builds; nothing had ever
+     * extracted a pattern for it. Unresolved stays NULL and slot_delete already null-checks (see :1474). */
+    g_remove_sel = (remove_from_sel_fn)sig_addr_by_name(results, n, "RemoveFromSelection");
     if (module_base) {
-        g_remove_sel = (remove_from_sel_fn)(module_base + REMOVE_FROM_SEL_RVA); /* re-derive-tagged fallback */
         /* IdStrOpAssign (idStr::operator=(char*), displayName write) = IdStrCtor + 0x700 -- a STABLE delta
          * across the April 2024 patch (old 0x19fcef0/0x19fd5f0, new 0x33a0f0/0x33a7f0, both +0x700). Derive
          * from the SIG-resolved IdStrCtor so it auto-adapts (the raw IDSTR_OPASSIGN_RVA 0x19fd5f0 is stale on

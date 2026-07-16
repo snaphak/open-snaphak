@@ -35,6 +35,8 @@
  * needs no change here. SLOT_SEARCH_MAX bounds the scan; the vtable is ~53 entries on the current build. */
 #define SLOT_SEARCH_MAX 0x400
 
+static int safe_read_n(const uint8_t *src, uint8_t *dst, size_t n);   /* defined below */
+
 /* Find the vtable slot holding `method`. Returns the slot address, or NULL if the method is not in this
  * vtable (which would mean the resolved method and the resolved vtable disagree -- refuse, do not guess). */
 static void **find_vtable_slot(void *vtable, void *method)

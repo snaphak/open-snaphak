@@ -91,6 +91,7 @@ typedef void *(*find_enum_fn)(void *reflect, const char *name);
 static const uint8_t   *g_doom_base    = NULL;   /* for the declMgr accessor at base + 0x17F7030 */
 static find_typeinfo_fn g_find_type    = NULL;   /* FindTypeInfoByName (sig 0x1A1D590) */
 static find_enum_fn     g_find_enum    = NULL;   /* FindEnumByName     (sig 0x1A1DA20) */
+static uintptr_t        g_decl_pure_find = 0;    /* DeclPureFind       (sig 0x18017A0; was hard-coded) */
 static volatile LONG    g_installed    = 0;      /* one-shot install latch */
 
 /* ----------------------------------------------------------- SHARED declMgr-object accessor -------
@@ -299,25 +300,33 @@ int sh_typeinfo_class_derives(const char *className, const char *baseName)
  * find returns it. RVA-tagged (the find + ctx are non-sig-able resource-mgr internals -- re-derive per build
  * via the validator @ 0x17ad682/0x17ad689). SEH-guarded: any fault / not-found inherit -> NULL (caller
  * fail-opens). Copies Y into buf; returns buf or NULL. */
-#define RESOURCE_MGR_CTX_RVA   0x59BD8F0u   /* resource-mgr ctx object (validator lea @ 0x17ad682) */
-#define DECL_PURE_FIND_RVA     0x18017A0u   /* FUN_1418017a0(ctx,name) -> cached decl-or-NULL (pure hash find) */
+#define RESOURCE_MGR_CTX_RVA   0x59BD8F0u   /* resource-mgr ctx object (validator lea @ 0x17ad682) -- a DATA
+                                             * global: no byte shape, so it CANNOT be signed. Still
+                                             * build-locked; this is the one remaining blocker for live
+                                             * inherit-base resolution. Re-derive per build by decoding the
+                                             * validator's `LEA` (rip-relative) rather than hard-coding it. */
 #define DECL_CLASSNAME_OFF     0x60u        /* idDeclEntityDef.className char* (vtbl+0xb0 = return *(this+0x60)) */
 const char *sh_typeinfo_inherit_base(const char *inheritName, char *buf, size_t cap)
 {
     if (buf && cap) buf[0] = '\0';
     if (!g_doom_base || !inheritName || !inheritName[0] || !buf || cap < 2) return NULL;
-    /* GUARD the hardcoded engine RVAs (DECL_PURE_FIND_RVA 0x18017A0 + RESOURCE_MGR_CTX_RVA 0x59BD8F0). On the
-     * post-April-2024 build 0x18017A0 is NO LONGER the pure decl-find -- calling that wrong code corrupts the
-     * SEH frame (so even the __try below can't catch it) and DOOM hard-faults (live-confirmed: entity-select
-     * -> dropdown enum -> here -> crash @ 0x18017a0). Tie safety to the declMgr-accessor prologue check: if
-     * the live type registry is unreachable on this build, these sibling decl RVAs are stale too -> skip the
-     * call and fail-open (caller uses the universal "idEntity" set). RE-DERIVE 0x18017A0 + 0x59BD8F0 per build
-     * to restore live inherit-base resolution. */
+    /* The find itself is now SIGNATURE-resolved (correct on both builds). Its second dependency is not:
+     * RESOURCE_MGR_CTX_RVA is a data global with no byte shape, so it stays build-locked and on the
+     * post-April-2024 build it addresses unrelated memory. Calling find(wrong_ctx, name) would run the
+     * right function against a bogus object -- and reads through a wrong-but-mapped pointer do not fault,
+     * they return garbage, so the __try below would not save us.
+     *
+     * So the gate stays: tie safety to the declMgr-accessor prologue check -- if the live type registry is
+     * unreachable on this build, this sibling resource-mgr constant is stale too -> skip and fail-open (the
+     * caller falls back to the universal "idEntity" set). TO RESTORE live inherit-base resolution, the ctx
+     * must be re-derived by decoding the validator's rip-relative LEA (@ 0x17ad682 on the old build) rather
+     * than hard-coded -- that is the single remaining blocker here, not the find. */
     if (!sh_typeinfo_get_declmgr()) return NULL;
+    if (!g_decl_pure_find) return NULL;
     __try {
         typedef void *(*decl_find_fn)(void *ctx, const char *name);   /* FUN_141800a40 calls it with 2 args */
         void *ctx = (void *)(g_doom_base + RESOURCE_MGR_CTX_RVA);
-        decl_find_fn find = (decl_find_fn)(g_doom_base + DECL_PURE_FIND_RVA);
+        decl_find_fn find = (decl_find_fn)g_decl_pure_find;
         void *decl = find(ctx, inheritName);
         if (!decl) return NULL;
         const char *cn = *(const char * const *)((const uint8_t *)decl + DECL_CLASSNAME_OFF);
@@ -708,6 +717,12 @@ int sh_typeinfo_install(const sig_result *results, size_t n, const uint8_t *modu
     g_doom_base = module_base;
     g_find_type = (find_typeinfo_fn)sig_addr_by_name(results, n, "FindTypeInfoByName");
     g_find_enum = (find_enum_fn)sig_addr_by_name(results, n, "FindEnumByName");
+    /* The pure decl-find used by sh_typeinfo_inherit_base. Was a hard-coded 0x18017A0, which on the
+     * post-April-2024 build is a DIFFERENT function; it signs uniquely at 31 bytes on both builds. NOTE
+     * this does NOT by itself restore live inherit-base resolution -- see sh_typeinfo_inherit_base: its
+     * other dependency, the resource-mgr ctx, is a DATA global with no byte shape to sign and is still
+     * build-locked. The find being correct removes one of the two blockers, not both. */
+    g_decl_pure_find = sig_addr_by_name(results, n, "DeclPureFind");
 
     char line[200];
     _snprintf_s(line, sizeof line, _TRUNCATE,
