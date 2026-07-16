@@ -1,7 +1,12 @@
 # Porting open-snaphak to the current (post-April-2024) DOOM build
 
-**Status doc + collaborator handoff.** Branch: `feature/doom-current-build-support`.
+**Status doc + collaborator handoff.** Branch: `dev`.
 Last updated: 2026-07-16.
+
+> **This document is temporary.** It tracks one port. When the punch list is empty and both builds are
+> verified, the durable parts (the [method](#method-how-to-re-derive-a-moved-address)) move into the
+> project's own docs and this file goes away. Per-build addresses do not belong in prose at all — they are
+> observations of a resolver's output, not settings.
 
 This document tracks the effort to make open-snaphak work on the **current Steam DOOM (2016) build**
 (the one shipped after the **April 11, 2024** patch). It covers what the patch broke, what has been
@@ -15,19 +20,37 @@ by anyone.
 
 ---
 
+## ⚠️ READ FIRST — a large batch of changes has landed and NONE of it has been run
+
+Everything in the "recently addressed" section below was derived by comparing the two DOOM
+executables offline and is verified only *statically*: signatures were checked to resolve uniquely on
+**both** builds, the tree builds clean, unit tests pass. **No DOOM process has executed a line of it.**
+
+"The bytes match" is not "the editor opens". Please treat the claims below as *needing testing*, not as
+done, and report what actually happens. The most valuable thing anyone can do with this branch right
+now is run it — on the current build **and** on the pre-April-2024 one.
+
+---
+
 ## TL;DR — current state
 
-**Working on the new build:**
+**Working on the new build (as previously reported, unchanged):**
 - Backend DLL loads (as `XINPUT1_4.dll`), WebView UI opens.
 - Editor is detected; the **Entities tab populates** with the real entity list + per-entity details.
 - **Both selection sync modes** (Follow editor selection / Select in 3D editor).
 - **Camera-origin lock** (read + write x/y/z).
 - **Editing: classname, inherit, decl-source, displayname** — edit + Save works.
 
-**Not working yet (needs re-derivation — see [punch list](#whats-still-broken--todo)):**
-- **Overrides** (blocks placing timelines) · **Timelines** · **Prefabs** (create-from-selection / load-place)
-- **SnapStack** `sh` commands (`acctargets` errors — whole surface likely broken) · **Delete** entity · **command unlock** (131 vs 312 commands)
-- Live type registry (class/inherit dropdowns use a static fallback) · devmode toggle
+**Recently addressed — implemented, NOT yet tested** (details per item in the punch list):
+- **Overrides**: the ctor is found again, *and* the hook no longer assumes a vtable slot index — the
+  slot moved (see [the vtable finding](#the-vtable-finding-the-one-real-behaviour-change)). Unblocks timelines.
+- **Prefabs**, **Delete**: their engine functions are signature-resolved; delete is un-gated.
+- **SnapStack**: a likely common root cause fixed — a second, stale copy of the editor pointer.
+- **Previous-build support**: was not merely untested, it was **broken by construction**; fixed.
+
+**Still open:** command unlock (131 vs 312) · live type registry + devmode · the save-path C++ throw.
+
+**All `SH_NEWBUILD_*` gates are gone** — there is nothing left gated off pending a re-derivation.
 
 ---
 
@@ -162,75 +185,135 @@ crashing. (Live registry restoration = re-derive those RVAs; see TODO.)
   signature-resolved `IdStrCtor`, with a prologue-byte validation (NULL on mismatch → safe no-op).
   **Confirmed working.**
 
-### Gating pattern (important for the collaborator)
-Features whose engine calls aren't yet re-derived are **gated to a safe no-op** rather than left to
-crash. Flags in `iface_engine.c`:
-- `SH_NEWBUILD_SEL_VERIFIED` (1) — selection add (sig-resolved).
-- `SH_NEWBUILD_WRITE_VERIFIED` (1) — classname/inherit/decl setters (sig-resolved).
-- `SH_NEWBUILD_STALERVA_OK` (0) — **delete** (`RemoveFromSelection`, stale). Displayname was moved off
-  this flag once re-derived.
+### Gating pattern — served its purpose; the flags are now gone
+While addresses were unknown, features whose engine calls weren't yet re-derived were **gated to a safe
+no-op** rather than left to crash (`SH_NEWBUILD_SEL_VERIFIED`, `SH_NEWBUILD_WRITE_VERIFIED`,
+`SH_NEWBUILD_STALERVA_OK`). That was the right call at the time and it is why this branch stayed usable
+while half-ported.
 
-Flip a flag / un-gate a slot only after its engine address is re-derived **and** validated.
+**All three are now removed** — the last one (`STALERVA_OK`, gating delete) went when
+`RemoveFromSelection` stopped being an address at all and became a signature.
+
+The gates are replaced by something strictly better: a compile-time flag encodes a belief about *which
+build you will run on*, whereas a **null check on a resolved pointer** reacts to the build actually
+running. An engine function that does not resolve is NULL and its op no-ops on its own — on either build,
+with no flag to remember to flip. If you add a new engine dependency, give it that shape rather than a
+new flag.
+
+---
+
+## The vtable finding (the one real behaviour change)
+
+Most of this port is addresses moving. **One thing is not**, and it is the kind of bug that never
+crashes — it just makes a feature quietly do the wrong thing.
+
+The overrides hook swaps the file system's **open-by-name** vtable slot. That slot was `+0xf8`. On the
+current build the class (`idFileSystemLocal`, per its RTTI name) **gained 10 virtuals**, and the same
+method now sits at **`+0x148`**. Patch a fixed `+0xf8` there and you replace some *other* virtual: no
+fault, no log, overrides simply doesn't shadow anything.
+
+So the code no longer carries a slot index. The method is byte-identical on both builds, so it is
+resolved **by signature**, and install **searches the vtable for it** and patches whichever slot holds
+it. That is build-agnostic: a future DOOM that reorders these virtuals again needs no change here.
+
+**This generalises, and it is worth knowing when reading the rest of this doc.** Every *engine vtable
+slot index* is per-build data, exactly like an RVA. All the ones this project uses were swept against
+both builds (spawn dispatch `+0x450`, entity `+0x20`/`+0x168`, cmdSystem `+0x50`/`+0x78`,
+`GetCameraOrigin` `+0xd8`): **only the overrides slot moved**. But three vtables did gain virtuals
+(file system +10, cvar system +1, common +3), so treat any *new* slot use on those as unverified.
 
 ---
 
 ## What's still broken / TODO
 
-Roughly dependency-ordered. Each is the same shape of fix: re-derive a moved signature/RVA.
+Roughly dependency-ordered.
 
-### A. Overrides — `ResProviderCtor` signature `NOT_FOUND`  *(blocks timelines)*
-`B1: overrides file-shadow SKIPPED -- ResProviderCtor not resolved`. Overrides (serving
-`%USERPROFILE%\snaphak\overrides\<name>` from disk) hooks the engine **resource-provider constructor**,
-found by a byte signature that no longer matches (prologue changed). **The user needs this to place a
-timeline.**
-- **Fix:** find the resource-provider ctor on the new build (old RVA `0x1a51070`; its member[0] = the
-  vtable at old engineBase `+0x27984a0`), capture a fresh prologue signature, update `signatures.c`
-  (`"ResProviderCtor"`).
+### A. Overrides — **ADDRESSED, needs testing** *(unblocks timelines)*
+Two separate faults, both fixed:
+1. `ResProviderCtor`'s prologue genuinely changed, so no byte pattern could find it. It was located
+   instead through **RTTI**: the ctor's only rip-relative operand is its own vtable, and MSVC stores a
+   class's identity as a mangled **name string** — which survives a recompile when bytes do not.
+   `vtable[-8]` → COL → TypeDescriptor → `.?AVidFileSystemLocal@@`, then walk that chain forward on the
+   new build. The name occurs exactly once per build, giving a unique vtable and a single LEA site
+   whose containing function (via `.pdata`) is the ctor: **`0x2A28C0`** (it also grew `0xBC` → `0xEF`,
+   which is why the signature missed). Incidentally this is what the class actually is — the "resource
+   provider" naming here is a misnomer; overrides hooks the **file system's** open-by-name.
+2. The slot index — see [the vtable finding](#the-vtable-finding-the-one-real-behaviour-change).
 
-### B. Timelines (create / place / edit / save)
-Depends on **A (overrides)** to place a timeline, plus its own decl/spawn engine calls. Untested on the
-new build beyond listing. Verify after overrides is back.
+**Test:** does `snaphak_backend.log` show `B1: overrides file-shadow installed (... open-by-name found
+at slot+0x148 ...)`? Then: does a file in `%USERPROFILE%\snaphak\overrides\` shadow?
 
-### C. Prefabs — create-from-selection, load/place, delete/rename
-These serialize a selection to a prefab and spawn it back. They go through the apply/serialize engine
-functions (`apply_engine.c`) — verify each; likely one or more stale calls.
+### B. Timelines (create / place / edit / save) — **unblocked, needs testing**
+Depended on A. Placing a timeline should now work; the rest of the timeline surface is untested on this
+build beyond listing.
 
-### D. SnapStack — the whole `sh` command surface is likely broken
-`acctargets` throwing a toast is almost certainly **not** isolated — the ~20 backend SnapStack
-subcommands (`sh psel` / `acctargets` / `bss` / `bse` / `push` / …, in `src/backend/snapstack.c` +
-`json_patch.c`) share the same engine dependencies (selection read/write, entity/target resolution,
-the apply/serialize path), so if one hits a stale call the rest probably do too. Treat this as one
-work-item, not a single command: reproduce each, read `snaphak_logs`, and identify the common
-stale-address / validation-reject root cause rather than fixing them one at a time.
+### C. Prefabs — **ADDRESSED, needs testing**
+`PrefabCtor` / `PrefabPopulate` / `PrefabDtor` / `EntityDeshare` were each reached by a hard-coded RVA,
+documented as "jumptable/inline-prone leaves the byte-sig scanner cannot reliably anchor". That turned
+out not to be a property of these functions — **all four sign uniquely at 20–38 bytes on both builds**;
+no one had pointed the extractor at them. All four are now signature-resolved.
+**Test:** create-from-selection, then load/place.
 
-### E. Delete entity — `RemoveFromSelection` (stale RVA `0x59fda0`)  *(gated: `SH_NEWBUILD_STALERVA_OK 0`)*
-The delete path calls a hard-coded `RemoveFromSelection` RVA that moved (crashed at `0x59fdbf` reading
-`[ptr-8]`). **Not findable by static delta/pattern** — the deltas that worked for other clusters fail
-here, and candidate functions don't match the array-shift semantics (search `sel+0x80` for the id,
-shift-remove, decrement `sel+0x88`). **Options:** (1) route the webview delete through the editor's
-**native delete console command** via `ExecuteCommandText` (sig-resolved cmdSystem) — cleanest, no RVA
-hunt; (2) capture it live (a heap-data watchpoint on `sel+0x88` write during a native delete — blocked
-by the current debugger tooling, which only watches module addresses); (3) keep hunting the array-shift
-signature.
+### D. SnapStack — **likely root cause fixed, needs testing**
+The suspicion that `acctargets` was not isolated looks right, and the shared dependency was not a
+stale engine *call* — it was a stale **editor pointer**. `apply_engine.c` kept its *own*
+`module_base + 0x3056748` and never used the resolver that was fixed in `iface_engine.c`, so on this
+build it pointed at unrelated memory. `snapstack.c` reaches the editor *only* through `apply_engine`'s
+slots, so every `sh` op inherited it. Its "editor up" check (`map != NULL`) could not catch this: off a
+wrong base that is a coincidence test on unrelated memory, not an identity check.
+There is now one accessor (`sh_iface_editor()`) and the private copies are deleted.
+**Test:** `sh psel`, `acctargets`, `bss`, `bse`, `push`.
 
-### F. Command unlock — `IdListGrow` AMBIGUOUS  → 131 vs 312 console commands
-The templated `idList<T>::grow` has near-identical copies so the signature is ambiguous → safe no-op →
-DEV commands don't unlock (cvars ~6582 vs ~6592 too). **Fix:** decode the grow helper from
-`AddCommand`'s (uniquely-resolved) call site instead of a direct signature.
+### E. Delete entity — **ADDRESSED + un-gated, needs testing**
+`RemoveFromSelection` was reported as "not findable by static delta/pattern". It is findable — it signs
+uniquely at **25 bytes** on both builds (**`0x11FB8E0`** here; the delta that finds it is the one shared
+by its immediate neighbours `AddToSelection`/`ClearSelection`, not a global one). The gate is removed;
+`g_remove_sel` being NULL is now the guard.
+**Test:** Entities right-click → Delete.
 
-### G. Live type registry + devmode  *(nice-to-have; static fallback works)*
-- Class/inherit dropdowns use a **static** class list because the `typeinfo` `declMgr`/decl-find RVAs are
-  stale (guarded, see done #5). Restore by re-deriving `0x17F7030` (lazy-init singleton accessor,
-  0-arg, returns declMgr in RAX), `0x18017A0` (pure decl-find), `0x59BD8F0` (resource-mgr ctx).
-- **devmode toggle** — `SessionDevModeGetter` signature `NOT_FOUND` (old `0x18a31d0`); self-disabled.
+### F. Command unlock — `IdListGrow` AMBIGUOUS → 131 vs 312 console commands  *(still open)*
+Now quantified: the masked body of `idList<T>::grow` matches **1,560 places** on the old build and 1,554 on
+the new. This is not "a signature that needs improving" — it is **1,560 template instantiations**, so no
+byte pattern can *ever* single one out. The originally-suggested fix is the only correct one: decode the
+grow helper from `AddCommand`'s (uniquely-resolved) call site. Nothing else will do.
 
-### H. Previous-DOOM-version support is untested
-`XINPUT1_3.dll` is now built from the same new-build-modified sources as `XINPUT1_4.dll` (same file size),
-so it is no longer the old known-good binary. It *should* still work on the pre-April-2024 build (the
-changes are additive/guarded) but has **not** been tested. **Decision needed:** do we keep supporting the
-previous version? If yes: a dedicated test pass on the old depot, and likely **build-version detection**
-so the new-build-only code paths (editor global-pointer slot, stale-RVA guards, gates) only engage on the
-build they belong to — right now they run on whichever DOOM loads the DLL.
+### G. Live type registry + devmode  *(partly addressed; still open)*
+- **The pure decl-find is now signature-resolved** (`0x18017A0` → `0x1572A80`, 31 bytes, unique on both).
+  That removes one of *two* blockers, not both: `sh_typeinfo_inherit_base` also needs the **resource-mgr
+  ctx** (`0x59BD8F0`), which is a **data global** — no byte shape, so it cannot be signed and stays
+  build-locked. The gate therefore stays. To finish this, re-derive the ctx by decoding the validator's
+  rip-relative `LEA` (`@ 0x17ad682` on the old build) rather than hard-coding it.
+- **`declMgr` accessor (`0x17F7030`) is unsignable in principle** — worth knowing before anyone tries: its
+  prologue is shared with ~47 other functions and is unique only via a build-volatile rip displacement.
+  It needs a rip-decode or a string/RTTI anchor, never a byte pattern.
+- **devmode toggle** — `SessionDevModeGetter` is `NOT_FOUND` **by design**, and should be left that way:
+  the pattern deliberately embeds the struct displacement `0x34c89`, so a build where that field moved
+  **refuses rather than mis-patches**. That is the fail-safe working. And the field *did* move: `0x34c89`
+  exists nowhere in the current build, and the nearest equivalent getters sit ~`0x2CD` lower — i.e.
+  `idSessionLocal` shrank by ~717 bytes (plausibly the `steam-no-bnet` change). Two candidate offsets fit
+  and there is no unique positional mapping, so this needs a caller-side derivation. Low priority: the
+  toggle only patches the getter's head, which is offset-agnostic — it just needs the right address.
+
+### H. Previous-DOOM-version support — **it was BROKEN, not untested. Fixed; needs testing**
+This was the assumption worth checking, and it did not hold. `editor_base()`'s fast path reads the editor
+global-pointer slot and, if the target isn't an editor, `return NULL` — treating *"this slot isn't what I
+expected"* as *"there is no editor"*. But that RVA (`0x2F8B238`) is a **current-build constant that still
+sits below the pre-patch build's `SizeOfImage`**, so on the old build the read **succeeds**, yields
+unrelated data, and the function returns NULL forever — the boot-RVA and fingerprint paths beneath it were
+never reached. The editor would never resolve there and the whole UI would be dead. (Neither accepted
+vtable constant is the old build's either.)
+
+Fixed: NULL only for a genuinely *empty* slot (the cheap "editor not open yet" case); otherwise fall
+through to the shape-based paths, which identify the editor by structure rather than a constant and so
+work on either build.
+
+**And note the anticipated fix — "build-version detection so new-build-only paths only engage on the right
+build" — turned out to be mostly unnecessary, which is the better outcome.** Nearly everything is now
+resolved by *identity* (signature, RTTI name, vtable search, shape fingerprint), and identity is
+build-agnostic by construction. The fewer build constants exist, the smaller "support both builds" gets as
+a problem. What remains build-specific is data globals, and those already fail soft.
+
+**Test (the real one):** run the pre-April-2024 build. Does the UI populate?
 
 ---
 
@@ -265,35 +348,96 @@ build they belong to — right now they run on whichever DOOM loads the DLL.
 | Selection hovered id | `sel + 0x2c` |
 
 ### Engine functions (this build)
+> These are recorded for reference, but **none of them is a maintained constant** — every line marked
+> "signature" is *found* at runtime on whatever build is loaded, so the numbers are an observation, not a
+> configuration. The only rows that need attention on a future patch are the ones that are not signatures.
+
 | Function | New | Old | How resolved |
 |---|---|---|---|
 | AddToSelection | `0x11fad50` | `0x59f210` | signature |
 | ClearSelection | `0x11fb540` | `0x59fa00` | signature |
 | IdStrCtor | `0x33A0F0` | `0x19fcef0` | signature |
-| IdStrOpAssign (displayname) | `0x33A7F0` | `0x19fd5f0` | **IdStrCtor + 0x700** (portable) |
-| RemoveFromSelection (delete) | *unknown* | `0x59fda0` | **stale — TODO E** |
-| ResProviderCtor (overrides) | *unknown* | `0x1a51070` | **sig NOT_FOUND — TODO A** |
-| declMgr accessor | *stale* | `0x17F7030` | **hard-coded — TODO G** |
-| pure decl-find | *stale* | `0x18017A0` | **hard-coded — TODO G** |
-| SessionDevModeGetter | *unknown* | `0x18a31d0` | **sig NOT_FOUND — TODO G** |
-| IdListGrow | *ambiguous* | `0x699a60` | **sig ambiguous — TODO F** |
+| IdStrOpAssign (displayname) | `0x33A7F0` | `0x19fd5f0` | **IdStrCtor + 0x700** (portable delta, prologue-validated) |
+| RemoveFromSelection (delete) | **`0x11FB8E0`** | `0x59fda0` | **signature** (25 B, unique on both) |
+| ResProviderCtor (overrides) | **`0x2A28C0`** | `0x1a51070` | **RTTI-anchored** (recompiled; no pattern can find it) |
+| FileSystemOpenByName (overrides slot) | **`0x2A9B00`** | `0x1a57a60` | **signature** (20 B) — its *slot* is searched for, not assumed |
+| PrefabCtor | **`0x11AC8D0`** | `0x54d0a0` | **signature** (20 B) |
+| PrefabPopulate | **`0x11ADB30`** | `0x54e410` | **signature** (38 B) |
+| PrefabDtor | **`0x117DC40`** | `0x51d870` | **signature** (30 B) |
+| EntityDeshare | **`0x118C2C0`** | `0x52c920` | **signature** (29 B) |
+| pure decl-find | **`0x1572A80`** | `0x18017A0` | **signature** (31 B) — but its *ctx* is still stale, see G |
+| declMgr accessor | *stale* | `0x17F7030` | hard-coded — **unsignable in principle**, see G |
+| SessionDevModeGetter | *moved* | `0x18a31d0` | refuses by design, see G |
+| IdListGrow | *ambiguous ×1554* | `0x699a60` | **no pattern can work** (1,560 template copies), see F |
+
+### The overrides vtable (the one slot that moved)
+
+| Thing | Old | New |
+|---|---|---|
+| `idFileSystemLocal` vtable | `0x27984a0` | `0x1FF4CA0` |
+| virtuals in it | 43 | **53 (+10)** |
+| open-by-name slot | `+0xf8` | **`+0x148`** |
+
+Also confirmed unchanged (swept against both builds): spawn dispatch `+0x450`, entity `+0x20` / `+0x168`,
+cmdSystem `+0x50` / `+0x78`, `GetCameraOrigin` `+0xd8`. Editor vtable: `0x2049FD8` → `0x2360588`.
 
 ---
 
 ## Method: how to re-derive a moved address
 
-1. **Import** the on-disk `DOOMx64vk.exe` into Ghidra (it's not packed; auto-analyze).
-2. For an **engine function**: prefer a **byte signature** (a distinctive prologue with rip-relative
-   spans wild-carded) → add to `src/backend/signatures.c`. If it's near a signatured anchor at a
-   **stable delta** (like `IdStrOpAssign = IdStrCtor + 0x700`), derive it off the anchor at runtime and
-   **validate the target's prologue** before use. Only hard-code an RVA as a last resort, always with a
-   prologue-byte guard so a stale value self-disables instead of crashing.
-3. For a **data global**: find a signatured accessor that loads it (`lea/mov reg,[rip+disp]`) and decode
-   the disp; or (like the editor) scan module data for a pointer whose target has the known vtable.
-4. **Always guard.** A call through a stale/wrong RVA runs unrelated code that corrupts the SEH frame,
-   so a plain `__try` can't catch it → validate first (prologue bytes / vtable identity), fail to a
-   NULL/no-op.
-5. **Gate the feature** (see the `SH_NEWBUILD_*` flags) until the address is re-derived + verified.
+**What the April 2024 patch actually is**, because it sets expectations: the same source **rebuilt**, not
+rewritten. Same linker and toolset; 25 of 27 imports identical; `.text` grew **0.18%**. All 1.3 MB of
+growth is `.rdata` — ~24k strings the old build *stripped* and this one keeps (the old build has **zero**
+`L:\zion\code\…` assert paths; this one has 585). The wholesale address movement is **LTCG**: under
+whole-program optimisation, changing any input re-lays-out the program while leaving each translation
+unit's internals intact. That is why the deltas come in clusters with different signs, and why *bytes*
+barely changed while *addresses* all did.
+
+The practical consequence: **almost every function is still byte-identical, so it can be found rather than
+re-derived.** Prefer finding.
+
+### The ladder — try these in order
+
+1. **Signature** (masked byte pattern). Works for anything whose bytes didn't change — which is nearly
+   everything. Prefer the **shortest instruction-aligned prefix that is unique on every build you have**,
+   not the longest: extra fixed bytes are extra surface for the next rebuild to break. But don't go *too*
+   short either — a bare minimal-unique can be a generic prologue that is unique by luck rather than by
+   identity (the prefab ctor is unique at 12 bytes of `mov r11,rsp; push rbx; sub rsp,0x30` — true today,
+   and no basis for tomorrow).
+2. **Stable delta off a signatured anchor**, *within the same translation unit* (`IdStrOpAssign =
+   IdStrCtor + 0x700` holds on both builds). Cross-cluster deltas do **not** hold — the clusters move by
+   different amounts and even opposite signs. Always validate the target's prologue.
+3. **RTTI anchor** — the only rung here proven to survive a **recompile**. If a function's bytes changed,
+   no pattern can find it; but if it touches a class, MSVC stores that class's identity as a mangled
+   **name string**, and strings survive. `vtable[-8]` → COL → `+0x0C` → TypeDescriptor → `+0x10` → name.
+   Find the name on the new build, walk it forward to the vtable, find who references the vtable, and map
+   that site to its containing function via `.pdata`. This is how `ResProviderCtor` was recovered.
+4. **Data global** — no byte shape, so never a signature. Decode it from a *signatured accessor* that
+   loads it (`lea/mov reg,[rip+disp]`), or identify the object it points at (an exact vtable). Never
+   hard-code one you can decode.
+5. **Vtable slot** — a slot index is per-build **data**, exactly like an RVA. Don't hard-code it: resolve
+   the *method* and search the vtable for it.
+6. **Hard-coded RVA** — last resort, and only with a validation guard.
+
+### The two rules that matter more than the ladder
+
+**A wrong resolution is worse than none.** A call through a wrong address runs whatever function now lives
+there and corrupts the SEH frame — not even `__try` catches it. So an unresolved thing must be **NULL and
+declined**, never substituted with a guess.
+
+**A guard is not a validation.** `__try` catches an access violation. It cannot catch a *successful* read
+or write at a wrong-but-mapped address — and on a relinked build that is the *common* case, because every
+RVA below `SizeOfImage` still reads fine. It just returns plausible garbage. This has bitten this codebase
+three times: a `map != NULL` "editor up" check that was really a coincidence test on unrelated memory; an
+SEH-wrapped byte write that would simply land somewhere else; and a signature fallback that substituted a
+stale address, making every downstream null-check unreachable. **Only identity validates** — prologue
+bytes, an exact vtable, a name.
+
+### Verifying a signature before you trust it
+
+A pattern is a claim. Check it against **both** builds — it must resolve *uniquely* on each, and on the
+old build it must land on the RVA you extracted it from. "Unique on the build I'm looking at" is how you
+ship a pattern that silently matches the wrong function elsewhere.
 
 ### Build / deploy / test loop
 ```powershell
