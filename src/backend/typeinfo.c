@@ -101,8 +101,30 @@ static volatile LONG    g_installed    = 0;      /* one-shot install latch */
 void *sh_typeinfo_get_declmgr(void)
 {
     if (!g_doom_base) return NULL;
+    /* VALIDATE the accessor RVA BEFORE calling it. On the post-April-2024 DOOM build
+     * DECLMGR_ACCESSOR_KNOWN_RVA (0x17F7030) is STALE -- it now lands inside idImpactManager::Serialize, so
+     * calling it runs unrelated engine code with garbage args and DOOM faults a frame later (live-confirmed
+     * 2026-07-15: the class/inherit dropdown enumerate on entity-select crashed at the engine decl-find
+     * 0x18017a0, reached through this bad accessor). The real accessor's prologue is fixed: push rbx; sub
+     * rsp,0x30; SEH-cookie store = 53 48 83 EC 30 48 C7 44 24 20 FE FF FF FF. If the bytes don't match, the
+     * RVA moved on this build -> refuse (return NULL) so every typeinfo user (enum dropdowns, sh_type,
+     * cs_fieldinfo, sh_superscriptop) degrades to its static fallback instead of crashing. RE-DERIVE the RVA
+     * per build to restore the live registry. */
+    static const uint8_t expect[] = { 0x53,0x48,0x83,0xEC,0x30,0x48,0xC7,0x44,0x24,0x20,0xFE,0xFF,0xFF,0xFF };
+    const uint8_t *acc = g_doom_base + DECLMGR_ACCESSOR_KNOWN_RVA;
     __try {
-        declmgr_getter_fn getter = (declmgr_getter_fn)(g_doom_base + DECLMGR_ACCESSOR_KNOWN_RVA);
+        for (size_t i = 0; i < sizeof expect; i++) {
+            if (acc[i] != expect[i]) {
+                static LONG s_warned = 0;
+                if (InterlockedCompareExchange(&s_warned, 1, 0) == 0)
+                    backend_log("B2: declMgr accessor RVA 0x17F7030 STALE on this build (prologue mismatch) -- "
+                                "type registry DISABLED (dropdowns use static list; sh_type unavailable). Re-derive per build.");
+                return NULL;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return NULL; }
+    __try {
+        declmgr_getter_fn getter = (declmgr_getter_fn)acc;
         return getter();
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return NULL;
@@ -284,6 +306,14 @@ const char *sh_typeinfo_inherit_base(const char *inheritName, char *buf, size_t 
 {
     if (buf && cap) buf[0] = '\0';
     if (!g_doom_base || !inheritName || !inheritName[0] || !buf || cap < 2) return NULL;
+    /* GUARD the hardcoded engine RVAs (DECL_PURE_FIND_RVA 0x18017A0 + RESOURCE_MGR_CTX_RVA 0x59BD8F0). On the
+     * post-April-2024 build 0x18017A0 is NO LONGER the pure decl-find -- calling that wrong code corrupts the
+     * SEH frame (so even the __try below can't catch it) and DOOM hard-faults (live-confirmed: entity-select
+     * -> dropdown enum -> here -> crash @ 0x18017a0). Tie safety to the declMgr-accessor prologue check: if
+     * the live type registry is unreachable on this build, these sibling decl RVAs are stale too -> skip the
+     * call and fail-open (caller uses the universal "idEntity" set). RE-DERIVE 0x18017A0 + 0x59BD8F0 per build
+     * to restore live inherit-base resolution. */
+    if (!sh_typeinfo_get_declmgr()) return NULL;
     __try {
         typedef void *(*decl_find_fn)(void *ctx, const char *name);   /* FUN_141800a40 calls it with 2 args */
         void *ctx = (void *)(g_doom_base + RESOURCE_MGR_CTX_RVA);

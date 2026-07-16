@@ -35,6 +35,11 @@
 #include "wiring_cleandirect.h" /* sh_wiring_cleandirect_generation -- the wire-any connect-edit counter (+0x288) */
 #include "snapstack.h"          /* sh_snapstack_push_ids_backend -- the SnapStack stack push (+0x2A0) */
 
+/* from entity.c -- REUSE its build-portable gameMgr-global-slot decoder (GameMgrLea RIP-relative MOV) for
+ * the MapGetter-based map DIAG below. Declared extern (not via entity.h) to avoid header coupling; the
+ * decode is stateless/idempotent, so calling it here AND in the entity install is harmless (logs twice). */
+extern const uint8_t *sh_resolve_gamemgr_slot(const sig_result *results, size_t n, const uint8_t *module_base);
+
 /* ---- editor-struct field offsets (this-live-build; ported from the reference implementation, SEH-guarded) ------------ */
 /* EDITOR_SINGLETON_RVA: the INLINE idSnapEditorLocal OBJECT (NOT a pointer) at module_base + this. A
  * NON-SIG-ABLE DATA GLOBAL (a .data object, no unique code fingerprint), like cmdSystem/cvarSystem ->
@@ -45,6 +50,45 @@
  * fields through) IS this object's address; RVA = that - module_base. (RVA derived from the live
  * editor singleton; see the re-derive recipe above.) */
 #define EDITOR_SINGLETON_RVA   0x3056748u   /* inline idSnapEditorLocal object = module_base + this (in-place ctor 0x51A8E0; re-derive per-build) */
+/* EDITOR_VTABLE_RVA: the idSnapEditorLocal VTABLE (module_base + this). This is the DEFINITIVE editor
+ * identity -- the fingerprint scan requires *E == module_base+EDITOR_VTABLE_RVA, which uniquely picks the
+ * real editor (the old "any module vtable" fingerprint matched a DECOY object on the post-April-2024 build
+ * -> its +0x204d0 was a menu-screen string table, not the selection -> every panel read off a bogus base ->
+ * empty panels). RE-DERIVE per build: GetCameraOrigin is `lea rax,[rcx+0x170]; ret` (byte sig
+ * 48 8D 81 70 01 00 00 C3) and sits at editor_vtable+0xd8; find that function, find the .rdata qword that
+ * points to it (the vtable slot), EDITOR_VTABLE_RVA = (that slot - 0xd8) - module_base. This build:
+ * vtable @ Ghidra 0x142360588 -> RVA 0x2360588 (GetCameraOrigin @ 0x141183600 sits at slot +0xd8). */
+#define EDITOR_VTABLE_RVA      0x2360588u
+/* GetCameraOrigin (lea rax,[rcx+0x170];ret) appears in TWO .rdata vtables -- 0x2360588 and 0x28796e8. One is
+ * the editor's PRIMARY vtable (at editor+0), the other a related/secondary class. We accept EITHER as the
+ * editor-identity tell in the pointer-indirection scan (the map+sel real-object checks then confirm). */
+#define EDITOR_VTABLE_RVA2     0x28796e8u
+/* EDITOR_GLOBAL_PTR_RVA: a .data slot holding the pointer to the (in-module, 8-aligned) editor object. Gives
+ * INSTANT resolution -- editor = *(module_base+this) -- vs the ~2.8s pointer-scan that starves the WebView
+ * message pump. Re-derive per build from the "editor via GLOBAL PTR: slot RVA=..." log line (the scan is the
+ * portable fallback if this slot ever fails to validate). This build: 0x2F8B238. */
+#define EDITOR_GLOBAL_PTR_RVA  0x2F8B238u
+/* NEW-BUILD SAFETY GATE: on the post-April-2024 build the edit-mode ENTITY-ARRAY + SELECTION internal layout
+ * is NOT yet re-derived (map+0x6a0 elements lack module vtables; sel ids/count read 0 at both 0x68/0x70 and
+ * 0x80/0x88). So the entity "ids" the UI list produces are not valid engine ids -- feeding one to the engine
+ * AddToSelection corrupts editor state and DOOM faults a frame later (unguardable by our SEH). Until the real
+ * entity/selection offsets are confirmed live, gate the engine-MUTATING selection calls to a safe no-op. Flip
+ * to 1 once verified. Read-only slots (list/count/classname) stay active -- they are SEH-safe. */
+#define SH_NEWBUILD_SEL_VERIFIED 1   /* live-verified 2026-07-15: sel ids@+0x80 count@+0x88 (count matched the 5 picked; ids are valid array indices) */
+/* ENTITY-WRITE gate: the edit/save/delete paths call engine WRITE fns, some via STALE hardcoded RVAs on the
+ * new build -- displayname IdStrOpAssign (IDSTR_OPASSIGN_RVA 0x19fd5f0) + RemoveFromSelection
+ * (REMOVE_FROM_SEL_RVA 0x59fda0) both moved; live-confirmed crashes (delete @0x59fdbf; save -> engine C++
+ * throw @0x33da45). And even with the RVAs re-derived the engine may REJECT a write (the C++ throw), so the
+ * whole write surface needs re-derivation + investigation. Until then, gate the write slots to a safe no-op
+ * so editing can't crash DOOM. Reads + selection(add, sig-resolved) + camera stay live. Flip to 1 per write
+ * path as each is re-derived + verified. */
+#define SH_NEWBUILD_WRITE_VERIFIED 1   /* classname/inherit/decl setters use SIG-RESOLVED engine fns (IdStrAssign,
+                                        * DeclSourceRebuild) -- correct addr on this build + validation guarded.
+                                        * EXPERIMENT: enabled to see if save works once displayname is excluded. */
+/* SEPARATE gate for the STALE hardcoded-RVA writers: displayname (IdStrOpAssign 0x19fd5f0 -- not even a defined
+ * fn on this build) + delete (RemoveFromSelection 0x59fda0 -- moved, hard-crashed @0x59fdbf). Keep OFF until
+ * those two RVAs are re-derived. */
+#define SH_NEWBUILD_STALERVA_OK 0
 #define ED_SEL_OBJ_OFF         0x204d0      /* editor+0x204d0 -> selection object ptr */
 #define ED_CAMERA_ORIGIN_OFF   0x170        /* editor+0x170 -> camera-origin vec3 {x,y,z} (3 floats). DIRECT: the OG
                                              * obtains it via editor_vtable[+0xd8](editor) where the engine method
@@ -183,6 +227,9 @@ static unsigned g_scan_diag_wsec, g_scan_diag_vt, g_scan_diag_mode, g_scan_diag_
 static const uint8_t *g_scan_cand[6];   /* up to 6 full-fingerprint candidate addresses (DIAG disambiguation) */
 static int            g_scan_cand_n;
 static void              *g_devlayer_cvar = NULL;  /* cached snapEdit_enableDevLayer idCVar* (lazy; dev-layer gate) */
+/* MapGetter-based map DIAG deps (new-build entity-array verification -- see sh_diag_dump_gmmap). */
+static const uint8_t     *g_ie_gamemgr_slot = NULL; /* gameMgr global SLOT (deref lazily; non-null only in a live map/playtest) */
+static void            *(*g_ie_map_getter)(void *) = NULL; /* MapGetter(gameMgr) -> the live gameMgr SnapMap */
 static volatile LONG  g_installed = 0;
 
 /* ---- SEH-guarded primitive reads (a shifted offset degrades to a clean fail, never a crash) ----- */
@@ -210,6 +257,19 @@ static int ie_read_f32x3(const void *src, float out[3])
 {
     __try { out[0]=((const float*)src)[0]; out[1]=((const float*)src)[1]; out[2]=((const float*)src)[2]; return 1; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+/* SEH-guarded C-string copy for DIAG logging (a bad/shifted ptr degrades to "" rather than crashing). */
+static int ie_read_cstr(const void *src, char *dst, size_t cap)
+{
+    if (cap == 0) return 0;
+    __try {
+        const char *s = (const char *)src;
+        size_t i = 0;
+        for (; i + 1 < cap && s[i] != '\0'; i++) dst[i] = s[i];
+        dst[i] = '\0';
+        return 1;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { dst[0] = '\0'; return 0; }
 }
 /* a camera-origin coord is SANE iff finite + within a generous map bound. The `> && <` form is false for
  * NaN/Inf too (all comparisons with NaN are false), so this one test rejects garbage + out-of-range in one. */
@@ -246,20 +306,18 @@ static int ie_ptr_in_module(const void *p)
 
 static int editor_fingerprint_ok(const uint8_t *E)
 {
-    void *vt = NULL, *screen = NULL, *map = NULL, *sel = NULL, *sv = NULL, *mv = NULL;
-    int mode = 0; float cam[3];
-    if (!ie_read_ptr(E, &vt) || !ie_ptr_in_module(vt)) return 0;                 /* vtable in module */
-    if (!ie_read_s32(E + ED_ENTITY_MODE_OFF, &mode) || (mode != 1 && mode != 2)) return 0;
-    if (!ie_read_ptr(E + ED_SCREEN_OFF,  &screen) || screen == NULL) return 0;
-    if (!ie_read_ptr(E + ED_MAP_OBJ_OFF, &map)    || map    == NULL) return 0;
-    if (!ie_read_ptr(E + ED_SEL_OBJ_OFF, &sel)    || sel    == NULL) return 0;
-    if (!ie_read_ptr(screen, &sv) || !ie_ptr_in_module(sv)) return 0;            /* screen is a real object */
-    if (!ie_read_ptr(map,    &mv) || !ie_ptr_in_module(mv)) return 0;            /* map is a real object */
-    /* DISAMBIGUATOR: the camera-origin (3 floats @ +0x170) must be finite + in a sane coord range. The core
-     * fingerprint can match at TWO 16-byte-aligned offsets within the same large object region (live-observed
-     * on the post-April-2024 build); the TRUE editor base reads clean camera floats, while a shifted
-     * coincidental match reads astronomical garbage there. (The old entity-array disambiguator was dropped --
-     * the map's entity array/count offsets moved on this build; the camera field is a cleaner unique tell.) */
+    void *vt = NULL, *map = NULL, *sel = NULL, *mv = NULL, *sv = NULL; float cam[3];
+    /* SEMANTIC fingerprint (engine-code-confirmed offsets). The old fingerprint's flaw was checking only
+     * sel != NULL: the DECOY it adopted had a non-null +0x204d0 that pointed at a menu-screen STRING TABLE,
+     * not a real selection object. Requiring BOTH map (+0x204c8) AND selection (+0x204d0) to be REAL C++
+     * objects (a module vtable at their +0) rejects that decoy -- the string table's first qword is ASCII,
+     * not a module pointer. Camera-origin (+0x170) finite is the final disambiguator. (mode@+0x23618 dropped:
+     * that offset is unverified on this build and its check rejected the TRUE editor while the decoy passed.) */
+    if (!ie_read_ptr(E, &vt) || !ie_ptr_in_module(vt)) return 0;                          /* E is a C++ object */
+    if (!ie_read_ptr(E + ED_MAP_OBJ_OFF, &map) || map == NULL) return 0;
+    if (!ie_read_ptr(map, &mv) || !ie_ptr_in_module(mv)) return 0;                         /* map is a real object */
+    if (!ie_read_ptr(E + ED_SEL_OBJ_OFF, &sel) || sel == NULL) return 0;
+    if (!ie_read_ptr(sel, &sv) || !ie_ptr_in_module(sv)) return 0;                         /* sel is a real object (rejects decoy) */
     if (!ie_read_f32x3(E + ED_CAMERA_ORIGIN_OFF, cam) || !ie_cam_sane(cam)) return 0;
     return 1;
 }
@@ -281,12 +339,18 @@ static const uint8_t *sh_scan_for_editor(void)
 
     const uint8_t *found = NULL;
     int matches = 0;
-    /* DIAG cascade counters: how many candidates survive each successive fingerprint condition. When the
-     * scan fails, editor_base() logs these -- the level where the count collapses to 0 pinpoints the cause
-     * (c_vt==0 => module-size/PE parse bad; a later collapse => that offset moved on this build). c_full is
-     * the pre-disambiguator count (through the screen/map vtable checks); c_ents adds the map-entity-array
-     * disambiguator (== editor_fingerprint_ok) -- that's the one we adopt on. */
     unsigned c_wsec = 0, c_vt = 0, c_mode = 0, c_screen = 0, c_map = 0, c_sel = 0, c_full = 0, c_ents = 0;
+    /* PHASE B (pointer-indirection): the editor is HEAP-allocated on the new build (the direct object scan
+     * finds 56 in-module look-alikes, and the exact editor vtable has 0 in-module objects). But a GLOBAL
+     * POINTER to it lives in .data/.bss. So we also walk every 8-aligned qword slot, deref it, and check the
+     * TARGET's vtable == an editor vtable (0x2360588 / 0x28796e8). That uniquely finds the heap editor via
+     * its global pointer -- the vtable is the definitive identity (the 56-way ambiguity of the field
+     * fingerprint doesn't apply once we key on the exact vtable). We record the winning P AND its slot RVA. */
+    const void *EDVT1 = (const void *)(g_module_base + EDITOR_VTABLE_RVA);
+    const void *EDVT2 = (const void *)(g_module_base + EDITOR_VTABLE_RVA2);
+    const uint8_t *found_ptr = NULL, *found_slot = NULL; int found_vt = 0;
+    const void *ptr_cands[8]; int n_ptr = 0;   /* distinct editor objects reached via a global ptr */
+    unsigned c_slots = 0, c_pnn = 0, c_pvt = 0;
     g_scan_cand_n = 0;
     for (uint16_t s = 0; s < numSec; s++) {
         const uint8_t *sec = secTab + (size_t)s * 40;   /* IMAGE_SECTION_HEADER = 40 bytes */
@@ -298,32 +362,59 @@ static const uint8_t *sh_scan_for_editor(void)
         c_wsec++;
         const uint8_t *start = g_module_base + vaddr;
         const uint8_t *end   = start + vsize;
-        /* only slots where the whole fingerprint span (up to +0x23618) still fits inside the section. */
-        for (const uint8_t *E = start; E + ED_ENTITY_MODE_OFF + 4 <= end; E += 16) {
-            void *vt = NULL, *screen = NULL, *map = NULL, *sel = NULL, *sv = NULL, *mv = NULL;
-            int mode = 0; float cam[3];
-            if (!ie_read_ptr(E, &vt) || !ie_ptr_in_module(vt)) continue;            c_vt++;
-            if (!ie_read_s32(E + ED_ENTITY_MODE_OFF, &mode) || (mode != 1 && mode != 2)) continue; c_mode++;
-            if (!ie_read_ptr(E + ED_SCREEN_OFF,  &screen) || screen == NULL) continue; c_screen++;
-            if (!ie_read_ptr(E + ED_MAP_OBJ_OFF, &map)    || map    == NULL) continue; c_map++;
-            if (!ie_read_ptr(E + ED_SEL_OBJ_OFF, &sel)    || sel    == NULL) continue; c_sel++;
-            if (!ie_read_ptr(screen, &sv) || !ie_ptr_in_module(sv)) continue;
-            if (!ie_read_ptr(map,    &mv) || !ie_ptr_in_module(mv)) continue;         c_full++;
-            /* record the CORE-fingerprint survivors here (before the camera disambiguator) so an ambiguous
-             * scan still dumps the candidates for inspection. */
-            if (g_scan_cand_n < (int)(sizeof g_scan_cand / sizeof g_scan_cand[0]))
-                g_scan_cand[g_scan_cand_n++] = E;
-            if (!ie_read_f32x3(E + ED_CAMERA_ORIGIN_OFF, cam) || !ie_cam_sane(cam)) continue;
-            c_ents++;   /* camera-sane survivors (the adopt count) */
+        /* --- PHASE A: direct in-module object scan (16-aligned; kept for builds w/ an in-module editor). --- */
+        for (const uint8_t *E = start; E + ED_SEL_OBJ_OFF + 8 <= end; E += 16) {
+            void *vt = NULL, *map = NULL, *sel = NULL, *mv = NULL, *sv = NULL; float cam[3];
+            if (!ie_read_ptr(E, &vt) || (vt != EDVT1 && vt != EDVT2)) continue;              c_vt++;
+            if (!ie_read_ptr(E + ED_MAP_OBJ_OFF, &map) || map == NULL) continue;             c_map++;
+            if (!ie_read_ptr(map, &mv) || !ie_ptr_in_module(mv)) continue;                   c_screen++;
+            if (!ie_read_ptr(E + ED_SEL_OBJ_OFF, &sel) || sel == NULL) continue;             c_sel++;
+            if (!ie_read_ptr(sel, &sv) || !ie_ptr_in_module(sv)) continue;                   c_full++;
+            if (!ie_read_f32x3(E + ED_CAMERA_ORIGIN_OFF, cam) || !ie_cam_sane(cam)) continue; c_ents++;
             if (!found) found = E;
             if (matches < 1000000) matches++;
         }
+        /* --- PHASE B: pointer-indirection scan (8-aligned; catches the heap editor via its global ptr). --- */
+        for (const uint8_t *S = start; S + 8 <= end; S += 8) {
+            void *P = NULL, *vt = NULL, *map = NULL, *sel = NULL, *mv = NULL, *sv = NULL;
+            if (!ie_read_ptr(S, &P) || P == NULL) continue;                                  c_slots++;
+            if (!ie_read_ptr(P, &vt) || (vt != EDVT1 && vt != EDVT2)) continue;              c_pnn++;
+            /* DEFINITIVE identity: P's vtable is an editor vtable. dedup DISTINCT P (aliased slots share one). */
+            int seen = 0;
+            for (int k = 0; k < n_ptr; k++) if (ptr_cands[k] == P) { seen = 1; break; }
+            if (!seen && n_ptr < (int)(sizeof ptr_cands / sizeof ptr_cands[0])) {
+                ptr_cands[n_ptr++] = P;
+                if (!found_ptr) { found_ptr = (const uint8_t *)P; found_slot = S; found_vt = (vt == EDVT1) ? 1 : 2; }
+            }
+            /* SOFT full-confirm counter (map+sel real objects) -- DIAG only, NOT required to adopt (the hit
+             * may be a secondary-base subobject where +0x204c8/+0x204d0 are shifted). */
+            if (ie_read_ptr((const uint8_t *)P + ED_MAP_OBJ_OFF, &map) && map &&
+                ie_read_ptr(map, &mv) && ie_ptr_in_module(mv) &&
+                ie_read_ptr((const uint8_t *)P + ED_SEL_OBJ_OFF, &sel) && sel &&
+                ie_read_ptr(sel, &sv) && ie_ptr_in_module(sv)) c_pvt++;
+        }
     }
-    /* stash the cascade for editor_base's throttled diag log. */
-    g_scan_diag_wsec = c_wsec; g_scan_diag_vt = c_vt; g_scan_diag_mode = c_mode;
-    g_scan_diag_screen = c_screen; g_scan_diag_map = c_map; g_scan_diag_sel = c_sel;
+    g_scan_diag_wsec = c_wsec; g_scan_diag_vt = c_vt; g_scan_diag_mode = c_pnn;   /* mode<-pnn (ptr w/ ed-vtable) */
+    g_scan_diag_screen = c_screen; g_scan_diag_map = c_map; g_scan_diag_sel = c_pvt; /* sel<-pvt (ptr full-confirm) */
     g_scan_diag_full = c_full; g_scan_diag_ents = c_ents;
-    return (matches == 1) ? found : NULL;   /* exactly one match -> adopt; else refuse (never a wrong object) */
+    /* prefer the pointer-indirection (heap) hit -- it is vtable-exact + map/sel-confirmed. Log the slot RVA
+     * (a future build can hardcode *(module_base+slotRVA) instead of scanning). n_ptr>1 => still ambiguous. */
+    if (found_ptr && n_ptr == 1) {
+        char l[200];
+        _snprintf_s(l, sizeof l, _TRUNCATE,
+            "C2: editor via GLOBAL PTR: slot RVA=0x%llX -> editor=%p (heap) vtbl=EDVT%d mapSelConfirm=%u",
+            (unsigned long long)((size_t)(found_slot - g_module_base)), (const void *)found_ptr, found_vt, c_pvt);
+        backend_log(l);
+        return found_ptr;
+    }
+    {   /* neither path uniquely resolved -- log the pointer-phase counts so the next step is clear. */
+        char l[200];
+        _snprintf_s(l, sizeof l, _TRUNCATE,
+            "C2 ptr-scan: slots(nonnull)=%u ptrWithEdVtbl=%u ptrFullConfirm=%u distinctEditors=%d | phaseA(vtbl)=%u full=%u",
+            c_slots, c_pnn, c_pvt, n_ptr, c_vt, c_ents);
+        backend_log(l);
+    }
+    return (matches == 1) ? found : NULL;   /* else the direct in-module hit, if unique */
 }
 
 /* ONE-TIME map-object DIAG (new-build offset re-derivation): the entity array/count offsets inside the
@@ -446,6 +537,205 @@ static void sh_diag_dump_module(void)
     backend_log(line);
 }
 
+/* ONE-TIME MapGetter-based map DIAG (verifies the new-build entity-array offsets found by DECOMPILING the
+ * map serializer FUN_14157b260 / per-entity FUN_14157af20). On the post-April-2024 build the entity array
+ * is NOT at editor+0x204c8->+0x6a0 (that object now holds idDecl*Unlock lists); the serializer walks the
+ * gameMgr SnapMap at:
+ *     entity array ptr  @ map+0x48      entity count (int) @ map+0x50   (8-byte stride)   [v5 gate @ map+0x38]
+ * and each entity carries:
+ *     def sub-object     @ ent+0x20     (sub+0x38 = decl ptr, sub+0x40 = int flag, *(sub+0x8) = name idStr data)
+ *     child-component arr @ ent+0x58     (count @ ent+0x60)
+ *     property arrays     @ ent+0x08 (count +0x10)  and  ent+0xb0 (count +0xb8)   (0x30 stride)
+ * This DIAG sources the map the SAME way the engine does -- MapGetter(gameMgr) -- and logs those fields for
+ * the first few entities so they can be confirmed against what the OPEN editor shows. It ALSO tells us the
+ * key open question: whether this serialize-array is the same entity set the editor UI/selection indexes,
+ * or whether gameMgr is NULL in pure EDIT mode (only live during a playtest) -- in which case the edit-mode
+ * entity list needs a different source than the gameMgr map.
+ *
+ * Retries cheaply (one ptr read) each editor poll while gameMgr is NULL (no live map yet); runs the actual
+ * MapGetter call + dump exactly once, the first poll gameMgr is non-null. MapGetter may build a
+ * DynamicSnapMap if absent -- benign, and in-editor a map already exists. All reads + the call SEH-guarded. */
+static void sh_diag_dump_gmmap(void)
+{
+    static LONG s_done = 0;
+    if (s_done) return;
+    char line[320];
+    if (!g_ie_map_getter || !g_ie_gamemgr_slot) {
+        s_done = 1;   /* deps missing -> disable (logged once) */
+        backend_log("C2 gm-map DIAG: MapGetter/gameMgr slot unresolved -- DIAG disabled");
+        return;
+    }
+    void *gm = NULL;
+    if (!ie_read_ptr(g_ie_gamemgr_slot, &gm) || gm == NULL) return;   /* no live map/playtest yet -- retry next poll */
+
+    void *map = NULL;
+    __try { map = g_ie_map_getter(gm); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { map = NULL; }
+    s_done = 1;   /* gameMgr is live + the call is made -- one-shot from here (success or not) */
+    if (map == NULL) { backend_log("C2 gm-map DIAG: MapGetter(gameMgr) returned NULL"); return; }
+
+    void *arr = NULL; uint32_t cnt = 0; int mode = 0;
+    ie_read_ptr((const uint8_t *)map + 0x48, &arr);   /* NEW-build entity-array ptr (was map+0x6a0) */
+    ie_read_u32((const uint8_t *)map + 0x50, &cnt);   /* NEW-build entity count    (was map+0x6a8) */
+    ie_read_s32((const uint8_t *)map + 0x38, &mode);  /* the v5 "loaded" gate MapWriter checks */
+    _snprintf_s(line, sizeof line, _TRUNCATE,
+        "C2 gm-map DIAG: gm=%p map=%p (RVA 0x%llX) map+0x38=%d  map+0x48(arr)=%p  map+0x50(count)=%u",
+        gm, map, ie_ptr_in_module(map) ? (unsigned long long)((const uint8_t *)map - g_module_base) : 0ull,
+        mode, arr, cnt);
+    backend_log(line);
+    if (arr == NULL) { backend_log("C2 gm-map DIAG: entity array (map+0x48) is NULL"); return; }
+    if (cnt > 200000u) { backend_log("C2 gm-map DIAG: count (map+0x50) implausible -- offset likely wrong"); return; }
+
+    /* walk the first few entities + log the decompile-derived fields, so each can be matched to an editor entity. */
+    uint32_t show = cnt < 5u ? cnt : 5u;
+    for (uint32_t i = 0; i < show; i++) {
+        void *ent = NULL;
+        if (!ie_read_ptr((const uint8_t *)arr + (size_t)i * 8, &ent) || ent == NULL) {
+            _snprintf_s(line, sizeof line, _TRUNCATE, "C2 gm-map DIAG:  ent[%u] = NULL slot", i);
+            backend_log(line); continue;
+        }
+        void *evt = NULL, *sub = NULL, *decl = NULL, *children = NULL, *props0 = NULL, *propsB = NULL, *nameStr = NULL;
+        int subflag = 0, cCnt = 0, p0Cnt = 0, pBCnt = 0;
+        char namebuf[96] = {0};
+        ie_read_ptr(ent, &evt);                                    /* entity vtable (module ptr if a real object) */
+        ie_read_ptr((const uint8_t *)ent + 0x20, &sub);            /* def sub-object (was +0x158) */
+        ie_read_ptr((const uint8_t *)ent + 0x58, &children); ie_read_s32((const uint8_t *)ent + 0x60, &cCnt);
+        ie_read_ptr((const uint8_t *)ent + 0x08, &props0);   ie_read_s32((const uint8_t *)ent + 0x10, &p0Cnt);
+        ie_read_ptr((const uint8_t *)ent + 0xb0, &propsB);   ie_read_s32((const uint8_t *)ent + 0xb8, &pBCnt);
+        if (sub) {
+            ie_read_ptr((const uint8_t *)sub + 0x38, &decl);
+            ie_read_s32((const uint8_t *)sub + 0x40, &subflag);
+            if (ie_read_ptr((const uint8_t *)sub + 0x08, &nameStr) && nameStr) ie_read_cstr(nameStr, namebuf, sizeof namebuf);
+        }
+        _snprintf_s(line, sizeof line, _TRUNCATE,
+            "C2 gm-map DIAG:  ent[%u]=%p vtblRVA=0x%llX sub(+0x20)=%p decl(+0x38)=%p flag=%d name='%s' "
+            "children(+0x58)=%p/%d props0(+0x08)=%p/%d propsB(+0xb0)=%p/%d",
+            i, ent, (unsigned long long)(ie_ptr_in_module(evt) ? (const uint8_t *)evt - g_module_base : 0ull),
+            sub, decl, subflag, namebuf, children, cCnt, props0, p0Cnt, propsB, pBCnt);
+        backend_log(line);
+    }
+}
+
+/* p is a readable C++ object iff *p is a module pointer (its vtable). SEH-guarded via ie_read_ptr. */
+static int ie_is_module_obj(const void *p)
+{
+    void *vt = NULL;
+    return ie_read_ptr(p, &vt) && ie_ptr_in_module(vt);
+}
+
+/* NEW-BUILD entity-container FINDER. editor+0x204c8 is now the DECL/resource manager (its long arrays @
+ * +0x45xx are decl DBs -- counts of hundreds), NOT the loaded-map; and MapGetter(gameMgr) is NULL in edit
+ * mode. So the editor's live entity list hangs off a DIFFERENT editor pointer field. Find it by structure:
+ * for each editor pointer field M that is a C++ object, scan M's inner fields for an (arrayPtr, count-@+8)
+ * pair -- the idSnapMap layout the serializer FUN_14157b260 proved (array @ map+0x48, count @ map+0x50) --
+ * whose first entries are ENTITIES: C++ objects each carrying a non-null def sub-object @ +0x20 (ent+0x20,
+ * proven by the per-entity serializer FUN_14157af20). Logs the FULL path editor+<Eoff> -> M -> M+<inner> =
+ * arr/count + entity[0]'s vtblRVA / subobj / def-name, so the new editor->map + array/count offsets can be
+ * hardcoded. One-time; every read SEH-guarded; hits capped (decl arrays may also match -- the name= field
+ * and count size disambiguate the real entity list). */
+static void sh_diag_scan_editor_for_map(const uint8_t *editor)
+{
+    char line[320];
+    backend_log("C2 ent-scan: sweeping editor pointer fields for the entity container (editor[0..0x28000])...");
+    int hits = 0;
+    for (unsigned Eoff = 0; Eoff <= 0x28000u && hits < 12; Eoff += 8) {
+        void *M = NULL;
+        if (!ie_read_ptr(editor + Eoff, &M) || M == NULL || !ie_is_module_obj(M)) continue;
+        for (unsigned inner = 0x08; inner <= 0x780u && hits < 12; inner += 8) {
+            void *arr = NULL; int cnt = 0;
+            if (!ie_read_ptr((const uint8_t *)M + inner, &arr) || arr == NULL) continue;
+            if (!ie_read_s32((const uint8_t *)M + inner + 8, &cnt) || cnt < 1 || cnt > 50000) continue;
+            /* the first few array entries must be ENTITY-shaped: C++ object + non-null def-subobj @ +0x20. */
+            int probe = cnt < 4 ? cnt : 4, ok = 1;
+            void *e0vt = NULL, *e0sub = NULL;
+            for (int k = 0; k < probe; k++) {
+                void *ent = NULL, *evt = NULL, *sub = NULL;
+                if (!ie_read_ptr((const uint8_t *)arr + (size_t)k * 8, &ent) || ent == NULL ||
+                    !ie_read_ptr(ent, &evt) || !ie_ptr_in_module(evt) ||
+                    !ie_read_ptr((const uint8_t *)ent + 0x20, &sub) || sub == NULL) { ok = 0; break; }
+                if (k == 0) { e0vt = evt; e0sub = sub; }
+            }
+            if (!ok) continue;
+            char nm[80] = {0}; void *ns = NULL;   /* entity[0]'s def name: *(sub+0x08) as a cstr */
+            if (ie_read_ptr((const uint8_t *)e0sub + 0x08, &ns) && ns) ie_read_cstr(ns, nm, sizeof nm);
+            _snprintf_s(line, sizeof line, _TRUNCATE,
+                "C2 ent-scan HIT: editor+0x%X -> M=%p(RVA 0x%llX) M+0x%X=arr=%p count=%d | ent0 vtblRVA=0x%llX sub(+0x20)=%p name='%s'",
+                Eoff, M, (unsigned long long)((const uint8_t *)M - g_module_base), inner, arr, cnt,
+                (unsigned long long)((const uint8_t *)e0vt - g_module_base), e0sub, nm);
+            backend_log(line);
+            hits++;
+        }
+    }
+    if (hits == 0)
+        backend_log("C2 ent-scan: NO entity container matched (editor[0..0x28000] inner[0x08..0x780], count@+8, ent+0x20 subobj)");
+}
+
+/* ONE-TIME dump of the TRUE editor (now that the exact-vtable fingerprint finds it, not the decoy). Reads
+ * the engine-code-confirmed fields -- map @ E+0x204c8, selection @ E+0x204d0 (ids @ sel+0x68, count @
+ * sel+0x70 per the bounds methods FUN_1411836a0/37a0/3a00) -- plus entity-array CANDIDATES in the map, so
+ * the remaining INTERNAL offsets (map entity array/count; sel ids/count moved 0x80/0x88 -> 0x68/0x70) can be
+ * read straight from the log and hardcoded. Select a few entities first so sel count is non-zero. SEH-guarded. */
+static void sh_diag_dump_true_editor(const uint8_t *E)
+{
+    char line[320];
+    void *map = NULL, *sel = NULL, *mvt = NULL, *svt = NULL;
+    ie_read_ptr(E, &mvt);   /* editor vtable (sanity) */
+    ie_read_ptr(E + ED_MAP_OBJ_OFF, &map);
+    ie_read_ptr(E + ED_SEL_OBJ_OFF, &sel);
+    _snprintf_s(line, sizeof line, _TRUNCATE,
+        "C2 TRUE-ed: E=%p vtblRVA=0x%llX map(+0x204c8)=%p(RVA 0x%llX) sel(+0x204d0)=%p",
+        (const void *)E, (unsigned long long)(ie_ptr_in_module(mvt) ? (const uint8_t *)mvt - g_module_base : 0),
+        map, (unsigned long long)(ie_ptr_in_module(map) ? (const uint8_t *)map - g_module_base : 0), sel);
+    backend_log(line);
+
+    /* SELECTION: new (code) ids@+0x68 count@+0x70 vs old ids@+0x80 count@+0x88. */
+    if (sel) {
+        void *ids68 = NULL, *ids80 = NULL; int cnt70 = -1, cnt88 = -1;
+        ie_read_ptr((const uint8_t *)sel + 0x68, &ids68); ie_read_s32((const uint8_t *)sel + 0x70, &cnt70);
+        ie_read_ptr((const uint8_t *)sel + 0x80, &ids80); ie_read_s32((const uint8_t *)sel + 0x88, &cnt88);
+        _snprintf_s(line, sizeof line, _TRUNCATE,
+            "C2 TRUE-ed: SEL svtbl? +0x68(ids)=%p +0x70(count)=%d | old +0x80(ids)=%p +0x88(count)=%d",
+            ids68, cnt70, ids80, cnt88);
+        backend_log(line);
+        if (ids68 && cnt70 > 0 && cnt70 < 100000) {   /* dump the first selected ids (verify == what you picked) */
+            int a=-1,b=-1,c=-1,d=-1;
+            ie_read_s32((const uint8_t *)ids68 + 0,  &a); ie_read_s32((const uint8_t *)ids68 + 4,  &b);
+            ie_read_s32((const uint8_t *)ids68 + 8,  &c); ie_read_s32((const uint8_t *)ids68 + 12, &d);
+            _snprintf_s(line, sizeof line, _TRUNCATE, "C2 TRUE-ed: SEL ids[0..3]=%d,%d,%d,%d (count=%d)", a,b,c,d,cnt70);
+            backend_log(line);
+        }
+    }
+
+    /* MAP entity-array candidates: dump known-offset spots + SCAN map[0x08..0x1000] for a pointer-array whose
+     * first entries are C++ objects (module vtable) -- the entity list. Log offset + derived count. */
+    if (map) {
+        void *p48=NULL,*p6a0=NULL,*p7d8=NULL; int c50=-1,c6a8=-1;
+        ie_read_ptr((const uint8_t *)map + 0x48,  &p48);  ie_read_s32((const uint8_t *)map + 0x50,  &c50);
+        ie_read_ptr((const uint8_t *)map + 0x6a0, &p6a0); ie_read_s32((const uint8_t *)map + 0x6a8, &c6a8);
+        ie_read_ptr((const uint8_t *)map + 0x7d8, &p7d8);
+        _snprintf_s(line, sizeof line, _TRUNCATE,
+            "C2 TRUE-ed: MAP +0x48=%p/+0x50=%d  +0x6a0=%p/+0x6a8=%d  +0x7d8=%p", p48,c50,p6a0,c6a8,p7d8);
+        backend_log(line);
+        int hits = 0;
+        for (unsigned O = 0x08; O <= 0x1000 && hits < 8; O += 8) {
+            void *arr = NULL; int cnt = 0;
+            if (!ie_read_ptr((const uint8_t *)map + O, &arr) || arr == NULL) continue;
+            if (!ie_read_s32((const uint8_t *)map + O + 8, &cnt) || cnt < 1 || cnt > 100000) continue;
+            void *e0=NULL,*e1=NULL,*v0=NULL,*v1=NULL;
+            if (!ie_read_ptr(arr, &e0) || e0==NULL || !ie_read_ptr(e0,&v0) || !ie_ptr_in_module(v0)) continue;
+            ie_read_ptr((const uint8_t *)arr + 8, &e1); if (e1) ie_read_ptr(e1,&v1);
+            _snprintf_s(line, sizeof line, _TRUNCATE,
+                "C2 TRUE-ed: MAP arr@+0x%X=%p count(+8)=%d ent0=%p vt0RVA=0x%llX ent1=%p vt1RVA=0x%llX",
+                O, arr, cnt, e0,
+                (unsigned long long)(ie_ptr_in_module(v0) ? (const uint8_t *)v0 - g_module_base : 0),
+                e1, (unsigned long long)(ie_ptr_in_module(v1) ? (const uint8_t *)v1 - g_module_base : 0));
+            backend_log(line);
+            hits++;
+        }
+        if (hits == 0) backend_log("C2 TRUE-ed: MAP no obvious entity ptr-array in [0x08..0x1000]");
+    }
+}
+
 /* Resolve (once) + return the real editor object, or NULL if it isn't up yet. Fast path after resolution.
  * Before resolution: accept the boot RVA if it fingerprints (old build), else THROTTLED-scan for it (new
  * build) -- the scan only succeeds in-editor, so it naturally no-ops at the HUB and resolves on entry. Once
@@ -453,7 +743,34 @@ static void sh_diag_dump_module(void)
 static const uint8_t *editor_base(void)
 {
     sh_diag_dump_module();   /* flag-gated one-time module dump for the Ghidra decompilation workflow */
+    sh_diag_dump_gmmap();    /* one-time (retries until a live map): verify the new-build entity offsets via MapGetter */
     if (g_editor_verified) return g_editor;
+
+    /* FAST PATH: resolve INSTANTLY via the editor global-pointer slot (RVA re-derived per build). *slot ->
+     * editor; validate its vtable is an editor vtable. This avoids the ~2.8s pointer-scan entirely (that scan
+     * blocks the UI-polling thread -> WebView never paints / paints very late). Slot null => editor not up
+     * yet (cheap return). The full scan below stays as the portable fallback if this slot ever fails. */
+    if (g_module_base && EDITOR_GLOBAL_PTR_RVA) {
+        void *P = NULL, *vt = NULL;
+        if (ie_read_ptr(g_module_base + EDITOR_GLOBAL_PTR_RVA, &P)) {   /* slot READABLE => it is our source of truth */
+            if (P &&
+                ie_read_ptr(P, &vt) &&
+                (vt == (const void *)(g_module_base + EDITOR_VTABLE_RVA) ||
+                 vt == (const void *)(g_module_base + EDITOR_VTABLE_RVA2))) {
+                g_editor = (const uint8_t *)P;
+                g_editor_verified = 1;
+                char l[160];
+                _snprintf_s(l, sizeof l, _TRUNCATE,
+                    "C2: editor via hardcoded GLOBAL-PTR slot (fast) @ %p (RVA 0x%llX)",
+                    (const void *)P, (unsigned long long)((size_t)((const uint8_t *)P - g_module_base)));
+                backend_log(l);
+                sh_diag_dump_true_editor(g_editor);
+                return g_editor;
+            }
+            return NULL;   /* editor not up yet (slot null / not-yet-valid) -- cheap no-op, do NOT run the slow scan */
+        }
+        /* slot READ FAULTED (RVA out of this build's range) -> fall through to the portable pointer-scan. */
+    }
 
     if (g_editor && editor_fingerprint_ok(g_editor)) {   /* boot RVA was right (old build) */
         g_editor_verified = 1;
@@ -476,7 +793,7 @@ static const uint8_t *editor_base(void)
         backend_log(line);
         g_editor = found;
         g_editor_verified = 1;
-        sh_diag_dump_map(found);   /* one-time: re-derive the moved entity-array/count offsets (see fn) */
+        sh_diag_dump_true_editor(found);   /* one-time: dump the TRUE editor's map/sel/entity layout (new build) */
         return g_editor;
     }
     /* DIAG: log the cascade a few times so a failing scan is explainable (module-size + where the
@@ -610,7 +927,24 @@ static int entity_array(void **out_array, uint32_t *out_count)
     uint32_t count = 0;
     if (!ie_read_ptr((const uint8_t *)arrObj + ARR_ENT_ARRAY_OFF, &array)) return 0;
     if (!ie_read_u32((const uint8_t *)arrObj + ARR_ENT_COUNT_OFF, &count)) return 0;
-    if (array == NULL || count > ENT_COUNT_CAP) return 0;
+    if (array == NULL || count == 0 || count > ENT_COUNT_CAP) return 0;
+    /* VALIDATE the array actually holds ENTITIES before trusting it. IMPORTANT: an idSnapMap entity does NOT
+     * start with a C++ vtable -- its +0x00 is an int TAG (live-confirmed: 2). The OG validity signal is
+     * entity+0x08 != 0 (a non-null sub-object ptr). Scan the first few slots: NULL slots are allowed
+     * (sparse-by-id); a non-null slot whose +0x08 is null/unreadable means this isn't the entity array ->
+     * refuse. Require >=1 valid entity so an all-null/garbage array can't pass. (Live-verified 2026-07-15:
+     * map+0x6a0 IS the entity array; className "idSnapMapUserFilter" @ entity+0x158->+0x60.) */
+    {
+        uint32_t probe = count < 16u ? count : 16u, real = 0;
+        for (uint32_t k = 0; k < probe; k++) {
+            void *e = NULL, *sub = NULL;
+            if (!ie_read_ptr((const uint8_t *)array + (size_t)k * 8, &e)) return 0;
+            if (e == NULL) continue;                                          /* sparse-by-id slot: allowed */
+            if (!ie_read_ptr((const uint8_t *)e + 0x08, &sub) || sub == NULL) return 0;  /* entity+8==0 -> not an entity */
+            real++;
+        }
+        if (real == 0) return 0;   /* nothing that looks like a real entity in the probe window */
+    }
     *out_array = array;
     *out_count = count;
     return 1;
@@ -699,9 +1033,18 @@ static void slot_clear_selection(sh_iface *self)
 static void slot_add_to_selection(sh_iface *self, int id)
 {
     (void)self;
+#if !SH_NEWBUILD_SEL_VERIFIED
+    /* GATED on the new build: the entity list's ids are not yet confirmed valid engine ids; passing a bad one
+     * to AddToSelection corrupts editor state -> DOOM faults a frame later (our SEH can't catch that). No-op
+     * until the entity/selection layout is re-derived live. */
+    { static LONG s = 0; if (InterlockedCompareExchange(&s, 1, 0) == 0)
+        backend_log("C2: add_to_selection GATED (new-build entity/selection offsets unverified) -- no-op"); }
+    (void)id; return;
+#else
     void *sel = selection_object();
     if (!sel || !g_add_sel) return;
     __try { g_add_sel(sel, id); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+#endif
 }
 
 /* +0x198 hovered id (phov): selObj+0x2c. <0 / fault -> -1. */
@@ -1018,6 +1361,9 @@ int sh_iface_class_inherit_ok(int id, const char *newClass, const char *newInher
 static void slot_set_classname(sh_iface *self, int id, const char *cstr)
 {
     (void)self;
+#if !SH_NEWBUILD_WRITE_VERIFIED
+    (void)id; (void)cstr; return;   /* GATED: new-build write path unverified (engine C++ throw on save) */
+#endif
     if (!g_idstr_assign || !cstr || !cstr[0]) return;
     void *defsub = defsub_for_id(id);
     if (!defsub) return;
@@ -1030,6 +1376,9 @@ static void slot_set_classname(sh_iface *self, int id, const char *cstr)
 static void slot_set_inherit(sh_iface *self, int id, const char *cstr)
 {
     (void)self;
+#if !SH_NEWBUILD_WRITE_VERIFIED
+    (void)id; (void)cstr; return;   /* GATED: new-build write path unverified */
+#endif
     if (!g_idstr_assign || !cstr || !cstr[0]) return;
     void *defsub = defsub_for_id(id);
     if (!defsub) return;
@@ -1050,6 +1399,9 @@ static void slot_set_inherit(sh_iface *self, int id, const char *cstr)
 static int slot_apply_class_inherit(sh_iface *self, int id, const char *cls, const char *inh)
 {
     (void)self;
+#if !SH_NEWBUILD_WRITE_VERIFIED
+    (void)id; (void)cls; (void)inh; return 0;   /* GATED: new-build write path unverified */
+#endif
     if (!g_idstr_assign) return 0;
     void *defsub = defsub_for_id(id);
     if (!defsub) return 0;
@@ -1073,7 +1425,8 @@ static int slot_apply_class_inherit(sh_iface *self, int id, const char *cls, con
 static void slot_set_displayname(sh_iface *self, int id, const char *cstr)
 {
     (void)self;
-    if (!g_idstr_opassign) return;   /* displayName = a FULL idStr -> operator= (0x19fd5f0), NOT the pool assign */
+    /* UN-GATED: g_idstr_opassign is now derived+prologue-validated from IdStrCtor+0x700 (or NULL -> safe). */
+    if (!g_idstr_opassign) return;   /* displayName = a FULL idStr -> operator= (IdStrCtor+0x700), NOT the pool assign */
     void *array = NULL; uint32_t count = 0;
     if (!entity_array(&array, &count)) return;
     void *ent = entity_ptr(array, count, id);
@@ -1088,6 +1441,9 @@ static void slot_set_displayname(sh_iface *self, int id, const char *cstr)
 static void slot_rebuild_declsource(sh_iface *self, int id, const char *cstr)
 {
     (void)self;
+#if !SH_NEWBUILD_WRITE_VERIFIED
+    (void)id; (void)cstr; return;   /* GATED: new-build write path unverified (decl reparse may throw) */
+#endif
     if (!g_decl_rebuild || !cstr) return;
     void *defsub = defsub_for_id(id);
     if (!defsub) return;
@@ -1100,12 +1456,16 @@ static void slot_rebuild_declsource(sh_iface *self, int id, const char *cstr)
 static void slot_remove_from_selection(sh_iface *self, int id)
 {
     (void)self;
+#if !SH_NEWBUILD_STALERVA_OK
+    (void)id; return;   /* GATED: RemoveFromSelection RVA 0x59fda0 STALE on new build (delete crashed @0x59fdbf). */
+#else
     if (!g_remove_sel || id == -1) return;
     const uint8_t *ed = editor_session();
     if (!ed) return;
     void *sel = NULL;
     if (!ie_read_ptr(ed + ED_SEL_OBJ_OFF_C3, &sel) || sel == NULL) return;
     __try { g_remove_sel(sel, id); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+#endif
 }
 
 /* +0x110 ENUMERATE the decls of a resource class (the Timeline-Editor constrained decl-comboboxes). The
@@ -1379,9 +1739,29 @@ int sh_iface_engine_install(const sig_result *results, size_t n, const uint8_t *
     g_idstr_assign = (idstr_assign_fn)    sig_addr_by_name(results, n, "IdStrAssign");
     g_decl_rebuild = (decl_src_rebuild_fn)sig_addr_by_name(results, n, "DeclSourceRebuild");
     g_get_decls    = (get_decls_fn)       sig_addr_by_name(results, n, "GetDeclsOfType"); /* +0x110 */
+    /* MapGetter-based map DIAG deps: MapGetter (sig) + the gameMgr slot (reuse entity.c's portable decoder).
+     * Either may be NULL -> the DIAG logs "unresolved" once and disables itself. */
+    g_ie_map_getter   = (void *(*)(void *))sig_addr_by_name(results, n, "MapGetter");
+    g_ie_gamemgr_slot = sh_resolve_gamemgr_slot(results, n, module_base);
     if (module_base) {
         g_remove_sel = (remove_from_sel_fn)(module_base + REMOVE_FROM_SEL_RVA); /* re-derive-tagged fallback */
-        g_idstr_opassign = (idstr_opassign_fn)(module_base + IDSTR_OPASSIGN_RVA); /* re-derive-tagged fallback (displayName) */
+        /* IdStrOpAssign (idStr::operator=(char*), displayName write) = IdStrCtor + 0x700 -- a STABLE delta
+         * across the April 2024 patch (old 0x19fcef0/0x19fd5f0, new 0x33a0f0/0x33a7f0, both +0x700). Derive
+         * from the SIG-resolved IdStrCtor so it auto-adapts (the raw IDSTR_OPASSIGN_RVA 0x19fd5f0 is stale on
+         * the new build). VALIDATE the target's prologue first -- a wrong-fn call corrupts the SEH frame so a
+         * bad guess could not be caught; on mismatch leave NULL (displayname no-ops safely). */
+        g_idstr_opassign = NULL;
+        if (g_idstr_ctor) {
+            static const uint8_t op_prologue[] =
+                { 0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x57,0x48,0x83,0xEC,0x40 };
+            const uint8_t *cand = (const uint8_t *)g_idstr_ctor + 0x700;
+            __try {
+                int ok = 1;
+                for (size_t i = 0; i < sizeof op_prologue; i++) if (cand[i] != op_prologue[i]) { ok = 0; break; }
+                if (ok) g_idstr_opassign = (idstr_opassign_fn)cand;
+            } __except (EXCEPTION_EXECUTE_HANDLER) { g_idstr_opassign = NULL; }
+        }
+        /* NB: on prologue mismatch g_idstr_opassign stays NULL -> displayname no-ops (never a stale-RVA call). */
     }
 
     /* Bind the vtable slots. We bind a body even when its engine fn is unresolved -- the body null-checks
