@@ -26,7 +26,7 @@ by anyone.
 
 **Not working yet (needs re-derivation — see [punch list](#whats-still-broken--todo)):**
 - **Overrides** (blocks placing timelines) · **Timelines** · **Prefabs** (create-from-selection / load-place)
-- **`acctargets`** (SnapStack) toast error · **Delete** entity · **command unlock** (131 vs 312 commands)
+- **SnapStack** `sh` commands (`acctargets` errors — whole surface likely broken) · **Delete** entity · **command unlock** (131 vs 312 commands)
 - Live type registry (class/inherit dropdowns use a static fallback) · devmode toggle
 
 ---
@@ -195,9 +195,13 @@ new build beyond listing. Verify after overrides is back.
 These serialize a selection to a prefab and spawn it back. They go through the apply/serialize engine
 functions (`apply_engine.c`) — verify each; likely one or more stale calls.
 
-### D. `acctargets` (SnapStack) throws a toast error
-A `sh` SnapStack subcommand. Reproduce, read `snaphak_logs`, and check whether it's a stale engine call
-or a validation reject.
+### D. SnapStack — the whole `sh` command surface is likely broken
+`acctargets` throwing a toast is almost certainly **not** isolated — the ~20 backend SnapStack
+subcommands (`sh psel` / `acctargets` / `bss` / `bse` / `push` / …, in `src/backend/snapstack.c` +
+`json_patch.c`) share the same engine dependencies (selection read/write, entity/target resolution,
+the apply/serialize path), so if one hits a stale call the rest probably do too. Treat this as one
+work-item, not a single command: reproduce each, read `snaphak_logs`, and identify the common
+stale-address / validation-reject root cause rather than fixing them one at a time.
 
 ### E. Delete entity — `RemoveFromSelection` (stale RVA `0x59fda0`)  *(gated: `SH_NEWBUILD_STALERVA_OK 0`)*
 The delete path calls a hard-coded `RemoveFromSelection` RVA that moved (crashed at `0x59fdbf` reading
