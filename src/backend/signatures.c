@@ -460,6 +460,15 @@ const sig_entry BACKEND_ENGINE_SIGNATURES[] = {
       "48 89 4C 24 08 57 48 83 EC 30 48 C7 44 24 20 FE FF FF FF 48 89 5C 24 48 48 8B D9 "
       "48 8D 05 ?? ?? ?? ?? 48 89 01 33 FF C7 41 18 00 00 33 00",
       0x1A51070u },
+    { "FileSystemOpenByName",
+      /* The open-by-name virtual the overrides swap targets -- the method that ctor's vtable holds. We
+       * resolve the METHOD so overrides can find WHICH SLOT holds it instead of hard-coding a slot index:
+       * the vtable gained virtuals in the April 2024 DOOM build and the method moved from slot +0xF8 to
+       * +0x148, so a fixed index silently swaps a DIFFERENT method (which does not crash -- it just makes
+       * overrides quietly hook the wrong thing). The method itself is byte-identical across both builds, so
+       * one signature locates it on either: 20 bytes, no wildcards, scan-unique on both. */
+      "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 F8 E0 FF",
+      0x1A57A60u },
     /* --- console-command + cvar registration infra (clone of XINPUT1_3 FUN_1800229b1) --- */
     { "Printf",            /* idCommon message-dispatch (0x1a08e80); every handler's console output via
                             * the Printf wrapper (clone of OG FUN_180006380 -> (1, fmt, &va)) routes here */

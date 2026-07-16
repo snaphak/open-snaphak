@@ -263,7 +263,10 @@ static DWORD WINAPI bootstrap_thread(LPVOID p)
                 break;
             }
         }
-        sh_overrides_install(res_ctor, ctor_clean);
+        /* The open-by-name method: overrides searches the vtable for THIS address to find which slot to
+         * swap, instead of assuming a slot index (the index moved between DOOM builds). */
+        void *open_fn = sig_addr_by_name(results, db, "FileSystemOpenByName");
+        sh_overrides_install(res_ctor, ctor_clean, open_fn);
 
         /* cvar + console-command registration (clone of OG XINPUT1_3 FUN_1800229b1). Both ride the
          * signature-resolved engine fns; neither installs an inline detour. CVARS FIRST -- they have NO

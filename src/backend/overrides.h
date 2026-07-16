@@ -49,7 +49,13 @@
  *                    hook-tolerant resolve, same conservative policy as the other installs.
  * Returns 1 if the slot was swapped, 0 otherwise (logs the reason). Emits a "B1: overrides file-shadow
  * installed ..." marker on success. */
-int sh_overrides_install(void *ctor_fn, int ctor_status_ok);
+/* `ctor_fn`        -- the sig-resolved resource-provider ctor; its `LEA` is decoded for the vtable.
+ * `ctor_status_ok` -- 1 only if that ctor resolved by a clean scan (a hooked prologue would corrupt the decode).
+ * `open_fn`        -- the sig-resolved open-by-name method. Required: we locate its vtable SLOT by searching
+ *                     the vtable for this address rather than assuming an index, because the index differs
+ *                     between DOOM builds (0xf8 pre-April-2024, 0x148 on the current build) and a wrong slot
+ *                     silently swaps the wrong method instead of failing. */
+int sh_overrides_install(void *ctor_fn, int ctor_status_ok, void *open_fn);
 
 /* Set the overrides ROOT directory (the dir that holds overrides\ and overrides\shader_includes\). The
  * effective lookup is <root>\overrides\<name>. Default = %USERPROFILE%\snaphak (OG's path -> overrides

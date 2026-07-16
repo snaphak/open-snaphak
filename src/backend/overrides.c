@@ -21,9 +21,31 @@
 #include "backend_log.h"
 #include "overrides_seed_baked.h"   /* the built-in "*Custom"-tab default decls (Timeline + Unknown) */
 
-/* The engine open-by-name vtable method offset within the resource-provider vtable.
- * DIRECT: OG patches engineBase+0x2798598; the vtable is engineBase+0x27984a0 -> slot offset = 0xf8. */
-#define OPEN_SLOT_OFFSET 0xf8
+/* The open-by-name method's slot within the resource-provider vtable is NOT a constant.
+ *
+ * It was 0xf8 on the pre-April-2024 build (the original patches engineBase+0x2798598 against a vtable at
+ * engineBase+0x27984a0 -> 0xf8). The current build inserted 10 virtuals ahead of it and the same method now
+ * sits at 0x148. A fixed index is therefore not merely stale, it is SILENTLY WRONG: swapping it replaces
+ * some other virtual, which does not crash -- overrides just hooks the wrong method and file-shadowing
+ * quietly does nothing (or worse).
+ *
+ * So we do not carry a slot index at all. The METHOD is byte-identical across both builds and resolves by
+ * signature ("FileSystemOpenByName"), so we scan the vtable for the resolved address and patch whichever
+ * slot holds it. That is build-agnostic by construction -- a future DOOM that reorders these virtuals again
+ * needs no change here. SLOT_SEARCH_MAX bounds the scan; the vtable is ~53 entries on the current build. */
+#define SLOT_SEARCH_MAX 0x400
+
+/* Find the vtable slot holding `method`. Returns the slot address, or NULL if the method is not in this
+ * vtable (which would mean the resolved method and the resolved vtable disagree -- refuse, do not guess). */
+static void **find_vtable_slot(void *vtable, void *method)
+{
+    for (size_t off = 0; off < SLOT_SEARCH_MAX; off += sizeof(void *)) {
+        void *entry = NULL;
+        if (!safe_read_n((const uint8_t *)vtable + off, (uint8_t *)&entry, sizeof entry)) return NULL;
+        if (entry == method) return (void **)((uint8_t *)vtable + off);
+    }
+    return NULL;
+}
 
 /* The engine open method ABI (DIRECT, from OG FUN_18000b370's own call shape):
  *   void* open(void* this, const char* name, uint8 b1, uint8 b2, uint mode)   // __fastcall, returns idFile*
@@ -376,12 +398,17 @@ static void seed_baked_overrides(void)
 
 /* ============================================================ the install (slot swap) ==============*/
 
-int sh_overrides_install(void *ctor_fn, int ctor_status_ok)
+int sh_overrides_install(void *ctor_fn, int ctor_status_ok, void *open_fn)
 {
     char line[MAX_PATH + 128];
 
     if (ctor_fn == NULL) {
         backend_log("B1: overrides file-shadow SKIPPED -- ResProviderCtor not resolved");
+        return 0;
+    }
+    if (open_fn == NULL) {
+        backend_log("B1: overrides file-shadow SKIPPED -- FileSystemOpenByName not resolved "
+                    "(needed to locate its vtable slot; we do not assume a slot index)");
         return 0;
     }
     if (!ctor_status_ok) {
@@ -403,7 +430,17 @@ int sh_overrides_install(void *ctor_fn, int ctor_status_ok)
         return 0;
     }
 
-    void **slot = (void **)((uint8_t *)vtable + OPEN_SLOT_OFFSET);
+    /* Locate the slot by finding the RESOLVED method inside the vtable -- never a fixed index (see the
+     * SLOT_SEARCH_MAX comment). If the method is not in this vtable, the two resolutions disagree and we
+     * refuse rather than patch something we cannot identify. */
+    void **slot = find_vtable_slot(vtable, open_fn);
+    if (slot == NULL) {
+        _snprintf_s(line, sizeof line, _TRUNCATE,
+                    "B1: overrides file-shadow SKIPPED -- the resolved open-by-name (%p) is not in the "
+                    "resolved vtable (%p); refusing to patch an unidentified slot", open_fn, vtable);
+        backend_log(line);
+        return 0;
+    }
 
     /* Save the original open + overwrite the slot with our hook. The slot is .data (an 8-byte pointer),
      * so we VirtualProtect RW, store, restore -- NOT install_inline_hook (that patches code). */
@@ -426,9 +463,11 @@ int sh_overrides_install(void *ctor_fn, int ctor_status_ok)
 
     if (!g_root[0]) default_root(g_root, sizeof g_root);
     seed_baked_overrides();   /* materialize the built-in "*Custom"-tab default decls if absent (Timeline + Unknown) */
+    /* Log the slot we FOUND (not one we assumed) -- it differs per DOOM build, so it is worth seeing. */
     _snprintf_s(line, sizeof line, _TRUNCATE,
-        "B1: overrides file-shadow installed (vtable=%p slot+0x%x=%p, orig open=%p); root=%s\\overrides",
-        vtable, OPEN_SLOT_OFFSET, (void *)slot, orig, g_root);
+        "B1: overrides file-shadow installed (vtable=%p, open-by-name found at slot+0x%x=%p, orig open=%p); "
+        "root=%s\\overrides",
+        vtable, (unsigned)((uint8_t *)slot - (uint8_t *)vtable), (void *)slot, orig, g_root);
     backend_log(line);
     return 1;
 }
