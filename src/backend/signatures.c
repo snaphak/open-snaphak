@@ -453,13 +453,12 @@ const sig_entry BACKEND_ENGINE_SIGNATURES[] = {
       "48 89 5C 24 08 57 48 83 EC 20 0F B6 01",
       0x1A29B90u },
     /* --- overrides FILE-SHADOW engine anchor (port of OG FUN_18000b370 vtable swap) --- */
-    { "ResProviderCtor",   /* engine resource-provider ctor (0x1a51070): member[0]=vtable@engineBase+0x27984a0;
-                            * carries `LEA RAX,[rip+vtable]` right after the prologue -> decode to recover the
-                            * vtable build-portably. The open-by-name method = vtable slot +0xf8 (orig fn
-                            * 0x141a57a60). The overrides op swaps THAT slot with our override-open. */
-      "48 89 4C 24 08 57 48 83 EC 30 48 C7 44 24 20 FE FF FF FF 48 89 5C 24 48 48 8B D9 "
-      "48 8D 05 ?? ?? ?? ?? 48 89 01 33 FF C7 41 18 00 00 33 00",
-      0x1A51070u },
+    /* (The engine resource-provider ctor, 0x1a51070, used to live here. Overrides resolved it only to decode
+     * its `LEA RAX,[rip+vtable]` and then add a fixed slot index. It is gone, and so is that whole chain:
+     * the ctor was RECOMPILED on the current DOOM build, so no byte pattern could ever match it again --
+     * which took overrides, the "*Custom" palette tab, unknowns and timelines down with it. Overrides now
+     * scans .rdata for the open-by-name method below and patches the one slot holding it. Nothing to
+     * recompile, nothing to decode, nothing to index.) */
     { "FileSystemOpenByName",
       /* The open-by-name virtual the overrides swap targets -- the method that ctor's vtable holds. We
        * resolve the METHOD so overrides can find WHICH SLOT holds it instead of hard-coding a slot index:

@@ -21,13 +21,13 @@
  *   The path builder FUN_18000ce50 = SHGetFolderPathA(CSIDL_PROFILE) + "/snaphak/" + relative.
  *
  * NATIVE PORT (the difference from OG):
- *   - This is a VTABLE-SLOT swap, NOT an inline code detour: the target is an 8-byte .data function
- *     pointer (vtable+0xf8), so we do NOT use install_inline_hook (which writes a 14-byte code jmp). We
- *     read+save the original slot pointer, then write our open hook's address into the slot (VirtualProtect
- *     RW, store, restore, FlushInstructionCache) and record it so we can restore the slot on unload.
- *   - The vtable is .data (not masked-byte sig-scannable). We locate it BUILD-PORTABLY: sig-resolve the
- *     ctor (DB name "ResProviderCtor"), decode the `LEA RAX,[rip+vtable]` right after its prologue to
- *     recover the vtable VA, then open-slot = vtable + 0xf8 -- the same LEA-decode the strids op uses.
+ *   - This is a VTABLE-SLOT swap, NOT an inline code detour: the target is an 8-byte function pointer in
+ *     .rdata, so we do NOT use install_inline_hook (which writes a 14-byte code jmp). We read+save the
+ *     original slot pointer, then write our open hook's address into the slot (VirtualProtect RW, store,
+ *     restore, FlushInstructionCache) and record it so we can restore the slot on unload.
+ *   - We locate the slot by IDENTITY, not arithmetic: sig-resolve the open-by-name METHOD, then scan
+ *     .rdata for the one slot holding it. A vtable is just a data slot holding a method's address, so the
+ *     method points at its own slot. Nothing in that path is per-build.
  *   - Our returned stream is our OWN clean-room idFile subclass (its dtor frees with our allocator, so we
  *     need no engine allocator/free): the engine only ever touches it through the vtable methods (all
  *     ours) + the public Length/Name fields. Semantically equivalent to OG's stream.
@@ -40,22 +40,17 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Install the overrides file-shadow by swapping the engine resource-provider's open vtable slot.
- *   ctor_fn        = resolved engine ResProviderCtor address (from the signature resolver, DB name
- *                    "ResProviderCtor"). 0 => not resolved; logs SKIPPED and returns 0.
- *   ctor_status_ok = 1 iff a CLEAN scan hit (SIG_OK), not the hook-tolerant known_rva fallback
- *                    (SIG_OK_HOOKED). The ctor is only used to DECODE the vtable LEA (we don't patch the
- *                    ctor's code), so a hooked prologue would corrupt the LEA decode -- refuse on a
- *                    hook-tolerant resolve, same conservative policy as the other installs.
+/* Install the overrides file-shadow by swapping the vtable slot that holds the engine's open-by-name.
+ *   module_base = the DOOM module base (its .rdata is scanned for the slot).
+ *   open_fn     = the sig-resolved open-by-name method ("FileSystemOpenByName"). Required and sufficient:
+ *                 the slot is found by scanning .rdata for THIS address, so there is no ctor to resolve, no
+ *                 vtable LEA to decode, and no slot index to assume -- all three were per-build fragile
+ *                 (the ctor was recompiled and unfindable; the index moved +0xf8 -> +0x148). If the method
+ *                 is absent from .rdata or appears in more than one slot, install refuses rather than guess.
  * Returns 1 if the slot was swapped, 0 otherwise (logs the reason). Emits a "B1: overrides file-shadow
- * installed ..." marker on success. */
-/* `ctor_fn`        -- the sig-resolved resource-provider ctor; its `LEA` is decoded for the vtable.
- * `ctor_status_ok` -- 1 only if that ctor resolved by a clean scan (a hooked prologue would corrupt the decode).
- * `open_fn`        -- the sig-resolved open-by-name method. Required: we locate its vtable SLOT by searching
- *                     the vtable for this address rather than assuming an index, because the index differs
- *                     between DOOM builds (0xf8 pre-April-2024, 0x148 on the current build) and a wrong slot
- *                     silently swaps the wrong method instead of failing. */
-int sh_overrides_install(void *ctor_fn, int ctor_status_ok, void *open_fn);
+ * installed ..." marker on success -- which is also what seeds the built-in "*Custom" tab decls, so a
+ * failure here is what makes the palette tab disappear. */
+int sh_overrides_install(const uint8_t *module_base, void *open_fn);
 
 /* Set the overrides ROOT directory (the dir that holds overrides\ and overrides\shader_includes\). The
  * effective lookup is <root>\overrides\<name>. Default = %USERPROFILE%\snaphak (OG's path -> overrides

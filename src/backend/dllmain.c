@@ -244,29 +244,19 @@ static DWORD WINAPI bootstrap_thread(LPVOID p)
         void *idstr_ctor   = (void *)sig_addr_by_name(results, db, "IdStrAssign");  /* 0x1a03e10 ctor */
         sh_strids_install(sort_body, sort_clean, strids_lea, strids_ins, strids_hash, idstr_ctor);
 
-        /* the OVERRIDES FILE-SHADOW (port of OG FUN_18000b370 vtable-slot swap). NOT an inline
-         * code detour -- it swaps the engine resource-provider's open-by-name VTABLE SLOT (+0xf8) with
-         * our override-open. The vtable is .data (not sig-scannable), so we resolve the provider CTOR
-         * (ResProviderCtor) by signature and the install decodes its `LEA RAX,[rip+vtable]` to recover
-         * the vtable build-portably, then saves the slot's original + writes our hook into the slot.
-         * Pass the resolve STATUS: the ctor is only used to DECODE the vtable LEA, so a hooked prologue
-         * (SIG_OK_HOOKED) would corrupt the decode -- refuse on the hook-tolerant fallback. The shadow
-         * is always-live once installed (no arm gate -- it only fires when an overrides/<name> file
-         * exists under %USERPROFILE%\snaphak\, exactly like OG). See overrides.c. */
-        void *res_ctor = NULL;
-        int   ctor_clean = 0;
-        for (size_t i = 0; i < db; i++) {
-            if (results[i].name && strcmp(results[i].name, "ResProviderCtor") == 0) {
-                if (results[i].status == SIG_OK || results[i].status == SIG_OK_HOOKED)
-                    res_ctor = (void *)results[i].addr;
-                ctor_clean = (results[i].status == SIG_OK);
-                break;
-            }
-        }
-        /* The open-by-name method: overrides searches the vtable for THIS address to find which slot to
-         * swap, instead of assuming a slot index (the index moved between DOOM builds). */
+        /* the OVERRIDES FILE-SHADOW (port of OG FUN_18000b370 vtable-slot swap). NOT an inline code
+         * detour -- it swaps the vtable SLOT holding the engine's open-by-name with our override-open,
+         * saving the original so it can be restored on unload. The shadow is always-live once installed
+         * (no arm gate -- it only fires when an overrides/<name> file exists under
+         * %USERPROFILE%\snaphak\, exactly like OG).
+         *
+         * It needs exactly one input: the sig-resolved open-by-name method. The slot is then found by
+         * scanning .rdata for that address -- no ctor to resolve, no vtable LEA to decode, no slot index
+         * to assume. All three of those were per-build fragile and all three broke at once on the current
+         * build, which is what took the "*Custom" palette tab (and so unknowns + timelines) with it.
+         * See overrides.c. */
         void *open_fn = (void *)sig_addr_by_name(results, db, "FileSystemOpenByName");
-        sh_overrides_install(res_ctor, ctor_clean, open_fn);
+        sh_overrides_install(g_doom_base, open_fn);
 
         /* cvar + console-command registration (clone of OG XINPUT1_3 FUN_1800229b1). Both ride the
          * signature-resolved engine fns; neither installs an inline detour. CVARS FIRST -- they have NO

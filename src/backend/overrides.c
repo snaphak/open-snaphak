@@ -21,33 +21,7 @@
 #include "backend_log.h"
 #include "overrides_seed_baked.h"   /* the built-in "*Custom"-tab default decls (Timeline + Unknown) */
 
-/* The open-by-name method's slot within the resource-provider vtable is NOT a constant.
- *
- * It was 0xf8 on the pre-April-2024 build (the original patches engineBase+0x2798598 against a vtable at
- * engineBase+0x27984a0 -> 0xf8). The current build inserted 10 virtuals ahead of it and the same method now
- * sits at 0x148. A fixed index is therefore not merely stale, it is SILENTLY WRONG: swapping it replaces
- * some other virtual, which does not crash -- overrides just hooks the wrong method and file-shadowing
- * quietly does nothing (or worse).
- *
- * So we do not carry a slot index at all. The METHOD is byte-identical across both builds and resolves by
- * signature ("FileSystemOpenByName"), so we scan the vtable for the resolved address and patch whichever
- * slot holds it. That is build-agnostic by construction -- a future DOOM that reorders these virtuals again
- * needs no change here. SLOT_SEARCH_MAX bounds the scan; the vtable is ~53 entries on the current build. */
-#define SLOT_SEARCH_MAX 0x400
-
-static int safe_read_n(const uint8_t *src, uint8_t *dst, size_t n);   /* defined below */
-
-/* Find the vtable slot holding `method`. Returns the slot address, or NULL if the method is not in this
- * vtable (which would mean the resolved method and the resolved vtable disagree -- refuse, do not guess). */
-static void **find_vtable_slot(void *vtable, void *method)
-{
-    for (size_t off = 0; off < SLOT_SEARCH_MAX; off += sizeof(void *)) {
-        void *entry = NULL;
-        if (!safe_read_n((const uint8_t *)vtable + off, (uint8_t *)&entry, sizeof entry)) return NULL;
-        if (entry == method) return (void **)((uint8_t *)vtable + off);
-    }
-    return NULL;
-}
+/* (The slot to swap is located by find_slot_holding, below -- not by a constant. See its comment.) */
 
 /* The engine open method ABI (DIRECT, from OG FUN_18000b370's own call shape):
  *   void* open(void* this, const char* name, uint8 b1, uint8 b2, uint mode)   // __fastcall, returns idFile*
@@ -339,13 +313,28 @@ static void *ov_open_hook(void *self, const char *name, unsigned char b1, unsign
     return g_orig_open(self, name, (unsigned char)(b1 & 0xff), (unsigned char)(b2 & 0xff), mode);
 }
 
-/* ============================================================ vtable-global LEA decode ==============
- * The engine resource-provider vtable is a .data global (can't be masked-byte sig-scanned). The ctor
- * ResProviderCtor (resolved by signature) starts with `... 48 8B D9 (MOV RBX,RCX) ; 48 8D 05 <disp32>
- * (LEA RAX,[rip+vtable]) ; 48 89 01 (MOV [RCX],RAX)`. We scan forward from the resolved entry for the
- * FIRST `48 8D 05` and decode its rip-relative disp to recover the vtable VA build-portably. (Same
- * decode the strids op uses for its table global.) */
-#define LEA_SCAN_WINDOW 0x40
+/* ====================================================== locating the slot to swap ==================
+ * We need ONE thing: the vtable slot holding the engine's open-by-name. Everything else is a means to
+ * that end, and the means used to be fragile in three separate ways at once:
+ *
+ *   resolve the ctor by signature -> decode its `LEA RAX,[rip+vtable]` -> add a fixed slot index (+0xf8)
+ *
+ * All three broke. The ctor was RECOMPILED on the current DOOM build, so no byte pattern can find it and
+ * the whole install bailed at step one -- which also skipped the built-in decl seeding below, so the
+ * "*Custom" palette tab never appeared. And the fixed index was wrong anyway: the class gained 10 virtuals
+ * and open-by-name moved to +0x148, so had step one succeeded, step three would have swapped the WRONG
+ * method -- silently, since that neither faults nor logs.
+ *
+ * So we do none of it. The open-by-name METHOD is byte-identical across builds and resolves by signature;
+ * a vtable is just a data slot holding a method's address; and that method's address appears in exactly
+ * ONE 8-aligned .rdata slot (verified on both builds -- old 0x2798598, new 0x1FF4DE8, i.e. the same slot
+ * the old chain computed, arrived at without computing anything). So: scan .rdata for the resolved
+ * method, and the slot that holds it is the slot to patch.
+ *
+ * No ctor. No LEA decode. No slot index. Nothing in the path that a rebuild can shift, and a class that
+ * reorders its virtuals again needs no change here. If the method is found in 0 or >1 slots we refuse:
+ * an ambiguous vtable is not something to guess at. */
+#define OV_SECTION_NAME_RDATA ".rdata"
 
 static int safe_read_n(const uint8_t *src, uint8_t *dst, size_t n)
 {
@@ -353,19 +342,36 @@ static int safe_read_n(const uint8_t *src, uint8_t *dst, size_t n)
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-static void *decode_vtable_global(const uint8_t *ctor_fn)
+/* The unique 8-aligned .rdata slot holding `method`, or NULL if absent/ambiguous. Reads the live mapped
+ * image (the PE headers + section table are present in memory), SEH-guarded across uncommitted tails. */
+static void **find_slot_holding(const uint8_t *module_base, void *method)
 {
-    uint8_t b[LEA_SCAN_WINDOW];
-    if (!safe_read_n(ctor_fn, b, sizeof b)) return NULL;
-    for (int i = 0; i + 7 <= LEA_SCAN_WINDOW; i++) {
-        if (b[i] == 0x48 && b[i + 1] == 0x8D && b[i + 2] == 0x05) {     /* LEA RAX,[rip+disp32] */
-            int32_t disp;
-            memcpy(&disp, &b[i + 3], 4);
-            const uint8_t *rip_next = ctor_fn + i + 7;
-            return (void *)(rip_next + disp);
+    if (!module_base || !method) return NULL;
+    __try {
+        const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)module_base;
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
+        const IMAGE_NT_HEADERS64 *nt = (const IMAGE_NT_HEADERS64 *)(module_base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE) return NULL;
+
+        const IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+        void **found = NULL;
+        for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
+            char nm[9] = { 0 };
+            memcpy(nm, sec->Name, 8);
+            if (strcmp(nm, OV_SECTION_NAME_RDATA) != 0) continue;   /* MSVC puts vtables in .rdata */
+
+            const uint8_t *base = module_base + sec->VirtualAddress;
+            size_t span = sec->Misc.VirtualSize;
+            for (size_t off = 0; off + sizeof(void *) <= span; off += sizeof(void *)) {
+                void *entry = NULL;
+                if (!safe_read_n(base + off, (uint8_t *)&entry, sizeof entry)) continue;  /* torn page */
+                if (entry != method) continue;
+                if (found) return NULL;             /* ambiguous -> refuse rather than pick one */
+                found = (void **)(base + off);
+            }
         }
-    }
-    return NULL;
+        return found;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return NULL; }
 }
 
 /* ====================================================== built-in default-decl self-seed =============
@@ -400,24 +406,13 @@ static void seed_baked_overrides(void)
 
 /* ============================================================ the install (slot swap) ==============*/
 
-int sh_overrides_install(void *ctor_fn, int ctor_status_ok, void *open_fn)
+int sh_overrides_install(const uint8_t *module_base, void *open_fn)
 {
     char line[MAX_PATH + 128];
 
-    if (ctor_fn == NULL) {
-        backend_log("B1: overrides file-shadow SKIPPED -- ResProviderCtor not resolved");
-        return 0;
-    }
     if (open_fn == NULL) {
-        backend_log("B1: overrides file-shadow SKIPPED -- FileSystemOpenByName not resolved "
-                    "(needed to locate its vtable slot; we do not assume a slot index)");
-        return 0;
-    }
-    if (!ctor_status_ok) {
-        /* The ctor is only used to DECODE the vtable LEA; a hooked prologue would corrupt the decode.
-         * Refuse on the hook-tolerant known_rva fallback (same conservative policy as the other ops). */
-        backend_log("B1: overrides file-shadow SKIPPED -- ResProviderCtor via hook-tolerant fallback "
-                    "(prologue may be hooked); not decoding the vtable LEA from a detoured prologue");
+        backend_log("B1: overrides file-shadow SKIPPED -- FileSystemOpenByName not resolved; without it "
+                    "we cannot identify the vtable slot to swap, and we do not assume one");
         return 0;
     }
     if (g_orig_open != NULL) {
@@ -425,21 +420,12 @@ int sh_overrides_install(void *ctor_fn, int ctor_status_ok, void *open_fn)
         return 1;
     }
 
-    void *vtable = decode_vtable_global((const uint8_t *)ctor_fn);
-    if (vtable == NULL) {
-        backend_log("B1: overrides file-shadow SKIPPED -- could not decode the vtable LEA "
-                    "(ResProviderCtor layout shifted?)");
-        return 0;
-    }
-
-    /* Locate the slot by finding the RESOLVED method inside the vtable -- never a fixed index (see the
-     * SLOT_SEARCH_MAX comment). If the method is not in this vtable, the two resolutions disagree and we
-     * refuse rather than patch something we cannot identify. */
-    void **slot = find_vtable_slot(vtable, open_fn);
+    /* The one lookup: the unique .rdata slot holding the resolved method. See find_slot_holding. */
+    void **slot = find_slot_holding(module_base, open_fn);
     if (slot == NULL) {
         _snprintf_s(line, sizeof line, _TRUNCATE,
-                    "B1: overrides file-shadow SKIPPED -- the resolved open-by-name (%p) is not in the "
-                    "resolved vtable (%p); refusing to patch an unidentified slot", open_fn, vtable);
+                    "B1: overrides file-shadow SKIPPED -- the resolved open-by-name (%p) was not found in "
+                    "exactly one .rdata slot (absent or ambiguous); refusing to guess", open_fn);
         backend_log(line);
         return 0;
     }
@@ -465,11 +451,12 @@ int sh_overrides_install(void *ctor_fn, int ctor_status_ok, void *open_fn)
 
     if (!g_root[0]) default_root(g_root, sizeof g_root);
     seed_baked_overrides();   /* materialize the built-in "*Custom"-tab default decls if absent (Timeline + Unknown) */
-    /* Log the slot we FOUND (not one we assumed) -- it differs per DOOM build, so it is worth seeing. */
+    /* Log the slot we FOUND. Worth seeing: it moved between DOOM builds (the class gained 10 virtuals), and
+     * this line is the evidence that we located it rather than assumed it. */
     _snprintf_s(line, sizeof line, _TRUNCATE,
-        "B1: overrides file-shadow installed (vtable=%p, open-by-name found at slot+0x%x=%p, orig open=%p); "
+        "B1: overrides file-shadow installed (open-by-name %p found in slot %p [rva 0x%llX], orig open=%p); "
         "root=%s\\overrides",
-        vtable, (unsigned)((uint8_t *)slot - (uint8_t *)vtable), (void *)slot, orig, g_root);
+        open_fn, (void *)slot, (unsigned long long)((const uint8_t *)slot - module_base), orig, g_root);
     backend_log(line);
     return 1;
 }
