@@ -85,10 +85,12 @@ extern const uint8_t *sh_resolve_gamemgr_slot(const sig_result *results, size_t 
 #define SH_NEWBUILD_WRITE_VERIFIED 1   /* classname/inherit/decl setters use SIG-RESOLVED engine fns (IdStrAssign,
                                         * DeclSourceRebuild) -- correct addr on this build + validation guarded.
                                         * EXPERIMENT: enabled to see if save works once displayname is excluded. */
-/* SEPARATE gate for the STALE hardcoded-RVA writers: displayname (IdStrOpAssign 0x19fd5f0 -- not even a defined
- * fn on this build) + delete (RemoveFromSelection 0x59fda0 -- moved, hard-crashed @0x59fdbf). Keep OFF until
- * those two RVAs are re-derived. */
-#define SH_NEWBUILD_STALERVA_OK 0
+/* (SH_NEWBUILD_STALERVA_OK removed.) It gated the two writers that reached the engine through a stale
+ * hard-coded RVA: displayname (IdStrOpAssign) and delete (RemoveFromSelection). Both are now resolved
+ * WITHOUT a build constant -- IdStrOpAssign as a prologue-validated delta off the signature-resolved
+ * IdStrCtor, RemoveFromSelection by its own signature (verified unique on both builds). Neither has an
+ * address to be stale, so there is nothing left for the gate to protect: an unresolved function is NULL
+ * and each call site already null-checks into a clean no-op. */
 #define ED_SEL_OBJ_OFF         0x204d0      /* editor+0x204d0 -> selection object ptr */
 #define ED_CAMERA_ORIGIN_OFF   0x170        /* editor+0x170 -> camera-origin vec3 {x,y,z} (3 floats). DIRECT: the OG
                                              * obtains it via editor_vtable[+0xd8](editor) where the engine method
@@ -1468,16 +1470,16 @@ static void slot_rebuild_declsource(sh_iface *self, int id, const char *cstr)
 static void slot_remove_from_selection(sh_iface *self, int id)
 {
     (void)self;
-#if !SH_NEWBUILD_STALERVA_OK
-    (void)id; return;   /* GATED: RemoveFromSelection RVA 0x59fda0 STALE on new build (delete crashed @0x59fdbf). */
-#else
+    /* Un-gated: this was disabled because RemoveFromSelection was reached through a hard-coded RVA that is
+     * stale on the current build (delete crashed at 0x59fdbf). It is now SIGNATURE-resolved and verified
+     * unique on both builds, so the address is no longer a guess -- and g_remove_sel being NULL (a build
+     * where the signature does not resolve) already makes this a clean no-op. */
     if (!g_remove_sel || id == -1) return;
     const uint8_t *ed = editor_session();
     if (!ed) return;
     void *sel = NULL;
     if (!ie_read_ptr(ed + ED_SEL_OBJ_OFF_C3, &sel) || sel == NULL) return;
     __try { g_remove_sel(sel, id); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-#endif
 }
 
 /* +0x110 ENUMERATE the decls of a resource class (the Timeline-Editor constrained decl-comboboxes). The
