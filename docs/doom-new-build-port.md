@@ -81,6 +81,16 @@ pinning 1.4's real export ordinals (2=GetState 3=SetState 4=GetCapabilities 5=En
 > The XInput proxy is a transparent pass-through — it hands DOOM's own buffer to the real XInput and
 > copies nothing, so it does not affect controller axes. (Ruled out during a controller-glitch scare.)
 
+> ⚠️ **Backward-compat with the PREVIOUS DOOM patch is UNTESTED.** Both `XINPUT1_3.dll` and
+> `XINPUT1_4.dll` are now built from the **same** (new-build-modified) sources — note the two files now
+> have the **same size**, where the `1_3` used to differ. So `XINPUT1_3.dll` is **no longer the old
+> known-good binary**; it now carries all of this branch's new-build changes (editor global-pointer
+> resolve, the `SH_NEWBUILD_*` gates, the typeinfo prologue guards, etc.). In principle those changes are
+> additive/guarded and `XINPUT1_3.dll` *should* still run on the pre-April-2024 DOOM (the depot people
+> pinned to), but **this has not been verified**. If we want to keep supporting the previous version, it
+> needs a dedicated test pass (and possibly build-version detection so the new-build-only paths only
+> engage on the new build). Tracked in the punch list as item **H**.
+
 ### 2. Boot crash — `IdListGrow`
 The command-unlock path called through a build-locked RVA (`IDLIST_GROW_RVA` 0x699a60) that the patch
 moved → AV on boot. Replaced with an **"IdListGrow" byte signature** in `signatures.c`;
@@ -189,6 +199,14 @@ DEV commands don't unlock (cvars ~6582 vs ~6592 too). **Fix:** decode the grow h
   stale (guarded, see done #5). Restore by re-deriving `0x17F7030` (lazy-init singleton accessor,
   0-arg, returns declMgr in RAX), `0x18017A0` (pure decl-find), `0x59BD8F0` (resource-mgr ctx).
 - **devmode toggle** — `SessionDevModeGetter` signature `NOT_FOUND` (old `0x18a31d0`); self-disabled.
+
+### H. Previous-DOOM-version support is untested
+`XINPUT1_3.dll` is now built from the same new-build-modified sources as `XINPUT1_4.dll` (same file size),
+so it is no longer the old known-good binary. It *should* still work on the pre-April-2024 build (the
+changes are additive/guarded) but has **not** been tested. **Decision needed:** do we keep supporting the
+previous version? If yes: a dedicated test pass on the old depot, and likely **build-version detection**
+so the new-build-only code paths (editor global-pointer slot, stale-RVA guards, gates) only engage on the
+build they belong to — right now they run on whichever DOOM loads the DLL.
 
 ---
 
