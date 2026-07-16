@@ -69,6 +69,9 @@ static void resolve_doom(void)
  * decrypted engine code is now mapped) or we give up after a generous budget (the SteamStub-wrapped .text must be decrypted before the DB resolves). */
 #define PB0_POLL_INTERVAL_MS  75
 #define PB0_POLL_TIMEOUT_MS   60000
+/* Consecutive passes with no improvement that mean "decrypted" -- see the poll loop for why a plateau, and
+ * not a full-DB count, is the right stop condition. */
+#define PB0_POLL_STABLE_PASSES 3
 
 /* Create the %USERPROFILE%\snaphak\ user-data tree if absent. The disk-backed features (overrides, rawmap
  * swap/save, strids) and the prefab resolver all read/write under this folder but historically ASSUMED
@@ -121,15 +124,31 @@ static DWORD WINAPI bootstrap_thread(LPVOID p)
      * (the reason an end-user couldn't see the "unknown entity" override served from snaphak\overrides\). */
     ensure_user_dirs();
 
-    /* Poll the resolver until the SteamStub has decrypted .text (full DB resolves uniquely) or we time
-     * out. sig_resolve_all returns the count of UNIQUE resolves; the bar is the whole DB. While .text is
-     * still encrypted this is 0 (or a stray partial), so we retry on a short interval. */
+    /* Poll the resolver until the SteamStub has decrypted .text, or we time out.
+     *
+     * The question this loop exists to answer is only "is the real code mapped yet?", and decryption is a
+     * step change: while .text is still encrypted the resolve count is 0, and the moment the stub runs it
+     * jumps to nearly the whole DB. Waiting for the WHOLE DB is a stricter bar than that question needs,
+     * and it is not always reachable -- an engine build where any single signature legitimately cannot
+     * resolve (a function that is genuinely absent, or whose bytes are ambiguous) never satisfies it. Then
+     * this loop burns its entire budget and continues anyway, stalling the boot by a full minute for
+     * nothing.
+     *
+     * So stop on the PLATEAU: once the count stops improving across consecutive passes we are scanning
+     * final code, whatever that count happens to be. The >0 guard keeps a plateau at zero (still
+     * encrypted) from ending the wait early. Whether each individual signature resolved is a separate
+     * question, and it is already answered per-signature by the consumers below -- each refuses on its own
+     * miss rather than relying on this count. */
     size_t total = sig_db_count();
     DWORD  t0 = GetTickCount();
-    size_t last_ok = 0;
+    size_t last_ok = 0, best = 0;
+    int stable = 0;
     for (;;) {
         last_ok = sh_resolve_count(g_doom_base);
-        if (last_ok == total) break;                       /* decrypted -- the real code is mapped */
+        if (last_ok == total) break;                       /* everything resolved -- nothing left to wait for */
+        if (last_ok > best) { best = last_ok; stable = 0; }/* still climbing */
+        else if (last_ok > 0) { stable++; }                /* a plateau above zero == .text is decrypted */
+        if (stable >= PB0_POLL_STABLE_PASSES) break;
         if (GetTickCount() - t0 >= PB0_POLL_TIMEOUT_MS) break;
         Sleep(PB0_POLL_INTERVAL_MS);
     }

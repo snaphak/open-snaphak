@@ -51,8 +51,14 @@ typedef struct ov_stream {
     char         flag8;      /* +0x22-ish via +0x21 read in slot 20; OG returns *(this+0x21) */
 } ov_stream;
 
-/* --- the 24 vtable methods, faithful to the OG slot semantics (every slot decompiled) --------------
- * All __fastcall(this in RCX). Behaviour matches OG FUN_18000ae00..b070 exactly, expressed in stdio. */
+/* The engine's seek-origin enum, as its own Seek implementation defines it (see ov_seek). It is NOT the
+ * CRT's: the engine passes these values, we translate to SEEK_CUR/SEEK_END/SEEK_SET. */
+#define OV_SEEK_CUR 0
+#define OV_SEEK_END 1
+#define OV_SEEK_ABS 2
+
+/* --- the vtable methods, faithful to the engine's slot semantics ------------------------------------
+ * All __fastcall(this in RCX), expressed in stdio over the FILE* the object carries. */
 
 static void  ov_dtor(ov_stream *s)                                   /* [0] close + free(this) */
 {
@@ -76,21 +82,26 @@ static long long ov_write(ov_stream *s, const void *buf, unsigned int n)  /* [6]
     return (long long)fwrite(buf, 1, n, s->fp);
 }
 static int       ov_seek(ov_stream *s, long long off, int origin);       /* fwd-decl ([14]) */
-/* [7] OG FUN_18000aeb0 -> engine 0x1a1b520 = (Seek(this,off,SEEK_END-ish=2)); (Read(this,buf,len)).
- *     We reproduce the same combo through our own methods (the engine fn only dispatched via the vtable). */
+/* [7] seek-then-read. The engine's own base implementation of this slot is exactly
+ *       Seek(this, offset, SEEK_ABS); return Read(this, buf, len);
+ *     (its disassembly loads the origin literal 2 into the 3rd argument, calls the Seek slot, then
+ *     TAIL-CALLS the Read slot), so we reproduce that combo through our own methods. */
 static long long ov_seekread(ov_stream *s, long long off, void *buf, unsigned int n)
 {
     if (!s) return 0;
-    ov_seek(s, off, 2);
+    ov_seek(s, off, OV_SEEK_ABS);
     return ov_read(s, buf, n);
 }
-/* [8] OG FUN_18000aec0 -> engine 0x1a1c220 (an analogous base helper). Same conservative seek+read
- *     reproduction; the slot is only exercised by engine paths that pre-position then read. */
-static long long ov_seekread2(ov_stream *s, long long off, void *buf, unsigned int n)
+/* [8] seek-then-WRITE. This slot's engine base implementation is byte-for-byte the slot-7 helper except
+ *     for its final tail-call, which targets the WRITE slot, not the Read slot -- so it is
+ *       Seek(this, offset, SEEK_ABS); return Write(this, buf, len);
+ *     (It was previously reproduced here as a second seek-then-READ, which no engine implementation of
+ *     this slot does.) The engine's resource-READ path never reaches it; a write path now stays correct. */
+static long long ov_seekwrite(ov_stream *s, long long off, const void *buf, unsigned int n)
 {
     if (!s) return 0;
-    ov_seek(s, off, 0);
-    return ov_read(s, buf, n);
+    ov_seek(s, off, OV_SEEK_ABS);
+    return ov_write(s, buf, n);
 }
 static int       ov_lock(ov_stream *s)          { if (s && s->fp) _lock_file(s->fp);   return 1; }   /* [9] */
 static int       ov_unlock(ov_stream *s)        { if (s && s->fp) _unlock_file(s->fp); return 1; }   /* [10] */
@@ -105,12 +116,22 @@ static long long ov_length_byseek(ov_stream *s)                      /* [11] tel
 }
 static void      ov_noop(ov_stream *s)          { (void)s; }                                          /* [12] RET 0 */
 static long long ov_tell(ov_stream *s)          { return (s && s->fp) ? _ftelli64(s->fp) : 0; }       /* [13] ftell */
-static int       ov_seek(ov_stream *s, long long off, int origin)    /* [14] fseek; OG maps 0->SET,1->END(2),else CUR */
+/* [14] Seek. The engine passes ITS origin enum, which is NOT the CRT's: its own Seek implementation
+ * indexes a 3-entry table by the origin argument and hands the result to fseek --
+ *     table[0]=SEEK_CUR(1)  table[1]=SEEK_END(2)  table[2]=SEEK_SET(0)
+ * -- and fatal-errors on anything above 2. So the engine's enum is { CUR=0, END=1, ABS=2 }; see the
+ * OV_SEEK_* constants. This mapping previously had CUR and ABS swapped, which was harmless only by
+ * accident: the engine's seek-then-read helper always passes (offset=0, ABS), and seeking 0 RELATIVE from
+ * position 0 lands in the same place as seeking to 0 ABSOLUTE. The chunked read (which seeks to 0, 64K,
+ * 128K...) is the first caller that would have turned those relative hops into wrong offsets. */
+static int       ov_seek(ov_stream *s, long long off, int origin)
 {
     if (!s || !s->fp) return -1;
-    int o = SEEK_CUR;
-    if (origin == 0) o = SEEK_SET;
-    else if (origin == 1) o = SEEK_END;
+    int o;
+    if (origin == OV_SEEK_CUR)      o = SEEK_CUR;
+    else if (origin == OV_SEEK_END) o = SEEK_END;
+    else if (origin == OV_SEEK_ABS) o = SEEK_SET;
+    else return -1;                 /* the engine fatal-errors here; we just refuse the seek */
     return _fseeki64(s->fp, off, o);
 }
 static long long ov_vprintf(ov_stream *s, const char *fmt, va_list ap)   /* [15] vfprintf */
@@ -137,40 +158,116 @@ static void      ov_flush_a(ov_stream *s)       { if (s && s->fp) fflush(s->fp);
 static void      ov_flush_b(ov_stream *s)       { if (s && s->fp) fflush(s->fp); }        /* [22] fflush */
 static long long ov_ret1(ov_stream *s)          { (void)s; return 1; }   /* [23] return 1 */
 
-/* The stream vtable -- one 24-entry table shared by every stream we hand back (the methods are
- * stateless w.r.t. the object beyond `this`). Order MATCHES the OG PTR_FUN_18003d050 slot order
- * exactly (every slot decompiled in pb1-overrides), so the engine calls the right method per slot. */
-static void *g_stream_vtable[24] = {
-    (void *)ov_dtor,          /* 0  +0x00 close/dtor */
-    (void *)ov_ret0_a,        /* 1  +0x08 */
-    (void *)ov_ret0_b,        /* 2  +0x10 */
-    (void *)ov_length,        /* 3  +0x18 Length */
-    (void *)ov_name,          /* 4  +0x20 Name */
-    (void *)ov_read,          /* 5  +0x28 Read */
-    (void *)ov_write,         /* 6  +0x30 Write */
-    (void *)ov_seekread,      /* 7  +0x38 */
-    (void *)ov_seekread2,     /* 8  +0x40 */
-    (void *)ov_lock,          /* 9  +0x48 Lock */
-    (void *)ov_unlock,        /* 10 +0x50 Unlock */
-    (void *)ov_length_byseek, /* 11 +0x58 */
-    (void *)ov_noop,          /* 12 +0x60 (OG RET 0) */
-    (void *)ov_tell,          /* 13 +0x68 Tell */
-    (void *)ov_seek,          /* 14 +0x70 Seek */
-    (void *)ov_printf_thunk,  /* 15 +0x78 vfprintf */
-    (void *)ov_printf_thunk,  /* 16 +0x80 vfprintf */
-    (void *)ov_ret0_c,        /* 17 +0x88 */
-    (void *)ov_ret0_d,        /* 18 +0x90 */
-    (void *)ov_ret0_e,        /* 19 +0x98 */
-    (void *)ov_flag8,         /* 20 +0xa0 */
-    (void *)ov_flush_a,       /* 21 +0xa8 Flush */
-    (void *)ov_flush_b,       /* 22 +0xb0 Flush */
-    (void *)ov_ret1,          /* 23 +0xb8 */
+/* --- the two virtuals the CURRENT engine build added to idFile (absent from the older interface) -------
+ * Both are a single shared base implementation that no idFile subclass overrides (verified across all 12
+ * of them), so reproducing the base behaviour is exactly right -- there is no per-class variant to miss. */
+
+/* return false. (Engine base: `xor al,al ; ret`.) */
+static char ov_ret_false(ov_stream *s)          { (void)s; return 0; }
+
+/* A 64KB chunked SCATTER read: fill an array of 64KB buffers from `base_off`, returning the total read.
+ * Faithful to the engine's own base implementation, which loops
+ *     total += seekread(this, base_off + off, bufs[i], 0x10000)
+ * advancing off by 0x10000 per iteration while off < total_len, and returns the accumulated count. The
+ * length-0 guard and the advance-then-compare ordering match the engine's (it is a do/while). This is the
+ * method a >64KB resource read goes through -- our built-in settings decl is 70,016 bytes, so this path is
+ * live on any normal boot, not an exotic one. */
+static long long ov_scatter_read(ov_stream *s, long long base_off, void **bufs, long long total_len)
+{
+    if (!s || !bufs || total_len <= 0) return 0;
+    long long got = 0, off = 0;
+    size_t i = 0;
+    do {
+        got += ov_seekread(s, base_off + off, bufs[i], 0x10000);
+        off += 0x10000;
+        i++;
+    } while (off < total_len);
+    return got;
+}
+
+/* --- the stream vtables ----------------------------------------------------------------------------
+ * The engine calls our stream through ITS idFile slot order, and that order is per-build data: the current
+ * build inserted two virtuals into the interface (at index 3 and index 10), shifting everything after them.
+ * Getting this wrong does not crash -- it silently runs the wrong method, which is how a mis-ordered table
+ * turned a 70KB resource read into a permanent 100%-CPU spin.
+ *
+ * So we keep one table per known interface shape and CHOOSE by measuring the engine (see
+ * engine_idfile_slots): we never assume which build we are in. A shape we do not recognise is refused
+ * outright rather than guessed at -- see sh_overrides_install.
+ *
+ * The methods are stateless w.r.t. the object beyond `this`, so one table per shape is shared by every
+ * stream we hand back. */
+
+/* 31-slot idFile: the original interface. */
+static void *g_stream_vtable_v31[24] = {
+    (void *)ov_dtor,          /*  0 close/dtor */
+    (void *)ov_ret0_a,        /*  1 */
+    (void *)ov_ret0_b,        /*  2 */
+    (void *)ov_length,        /*  3 Length */
+    (void *)ov_name,          /*  4 Name */
+    (void *)ov_read,          /*  5 Read */
+    (void *)ov_write,         /*  6 Write */
+    (void *)ov_seekread,      /*  7 seek+read */
+    (void *)ov_seekwrite,     /*  8 seek+write */
+    (void *)ov_lock,          /*  9 Lock */
+    (void *)ov_unlock,        /* 10 Unlock */
+    (void *)ov_length_byseek, /* 11 */
+    (void *)ov_noop,          /* 12 */
+    (void *)ov_tell,          /* 13 Tell */
+    (void *)ov_seek,          /* 14 Seek */
+    (void *)ov_printf_thunk,  /* 15 vfprintf */
+    (void *)ov_printf_thunk,  /* 16 vfprintf */
+    (void *)ov_ret0_c,        /* 17 */
+    (void *)ov_ret0_d,        /* 18 */
+    (void *)ov_ret0_e,        /* 19 */
+    (void *)ov_flag8,         /* 20 */
+    (void *)ov_flush_a,       /* 21 Flush */
+    (void *)ov_flush_b,       /* 22 Flush */
+    (void *)ov_ret1,          /* 23 */
 };
+
+/* 34-slot idFile: the current interface. Identical methods, re-ordered around the two inserted virtuals
+ * (marked NEW below). Each entry's comment gives the index it held in the 31-slot shape. */
+static void *g_stream_vtable_v34[26] = {
+    (void *)ov_dtor,          /*  0 close/dtor        (was  0) */
+    (void *)ov_ret0_a,        /*  1                   (was  1) */
+    (void *)ov_ret0_b,        /*  2                   (was  2) */
+    (void *)ov_ret_false,     /*  3 NEW: return false            */
+    (void *)ov_length,        /*  4 Length            (was  3) */
+    (void *)ov_name,          /*  5 Name              (was  4) */
+    (void *)ov_read,          /*  6 Read              (was  5) */
+    (void *)ov_write,         /*  7 Write             (was  6) */
+    (void *)ov_seekread,      /*  8 seek+read         (was  7) */
+    (void *)ov_seekwrite,     /*  9 seek+write        (was  8) */
+    (void *)ov_scatter_read,  /* 10 NEW: 64KB chunked scatter read */
+    (void *)ov_lock,          /* 11 Lock              (was  9) */
+    (void *)ov_unlock,        /* 12 Unlock            (was 10) */
+    (void *)ov_length_byseek, /* 13                   (was 11) */
+    (void *)ov_noop,          /* 14                   (was 12) */
+    (void *)ov_tell,          /* 15 Tell              (was 13) */
+    (void *)ov_seek,          /* 16 Seek              (was 14) */
+    (void *)ov_printf_thunk,  /* 17 vfprintf          (was 15) */
+    (void *)ov_printf_thunk,  /* 18 vfprintf          (was 16) */
+    (void *)ov_ret0_c,        /* 19                   (was 17) */
+    (void *)ov_ret0_d,        /* 20                   (was 18) */
+    (void *)ov_ret0_e,        /* 21                   (was 19) */
+    (void *)ov_flag8,         /* 22                   (was 20) */
+    (void *)ov_flush_a,       /* 23 Flush             (was 21) */
+    (void *)ov_flush_b,       /* 24 Flush             (was 22) */
+    (void *)ov_ret1,          /* 25                   (was 23) */
+};
+
+/* Chosen at install by measuring the engine; NULL until then (and left NULL if the shape is unknown, which
+ * keeps the shadow uninstalled rather than serving streams the engine would call wrongly). */
+static void **g_stream_vtable = NULL;
 
 /* Construct a stream over an already-open FILE* + its known length. Allocates the object + a copy of
  * `name` after it (so the Name slot returns a stable pointer). NULL on alloc failure (caller fcloses). */
 static ov_stream *make_stream(FILE *fp, long long length, const char *name)
 {
+    /* No confirmed slot order -> no stream. Unreachable in practice (install refuses first), but the cost of
+     * being wrong here is a silent wrong-method call, so it is worth stating rather than assuming. */
+    if (g_stream_vtable == NULL) return NULL;
     size_t namelen = name ? strlen(name) : 0;
     ov_stream *s = (ov_stream *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
                                           sizeof(ov_stream) + namelen + 1);
@@ -342,6 +439,125 @@ static int safe_read_n(const uint8_t *src, uint8_t *dst, size_t n)
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
+/* The live mapped image's section span by name. The PE headers + section table are present in memory, so
+ * this needs no file access and is correct under ASLR (every address derives from the real module base). */
+static int section_span(const uint8_t *module_base, const char *want,
+                        const uint8_t **out_start, size_t *out_size)
+{
+    __try {
+        const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)module_base;
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+        const IMAGE_NT_HEADERS64 *nt = (const IMAGE_NT_HEADERS64 *)(module_base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+        const IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+        for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
+            char nm[9] = { 0 };
+            memcpy(nm, sec->Name, 8);
+            if (strcmp(nm, want) != 0) continue;
+            *out_start = module_base + sec->VirtualAddress;
+            *out_size  = sec->Misc.VirtualSize;
+            return 1;
+        }
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+/* ============================================ measuring the engine's idFile interface ==============
+ * Our stream is handed to the engine as an idFile, so our vtable's slot ORDER has to be the engine's. That
+ * order is per-build data: the current build inserted two virtuals into the interface (at index 3 and index
+ * 10), shifting every method after them. Getting it wrong does not crash -- the engine simply calls the
+ * wrong method, silently, which is how the old layout turned a >64KB resource read into a permanent spin.
+ *
+ * So MEASURE the interface instead of assuming a build. MSVC records every polymorphic class's identity as
+ * a mangled NAME STRING in its RTTI, and a name survives a recompile even when every byte of every method
+ * changes -- which is exactly what happened here. Walk the chain forward:
+ *
+ *     ".?AVidFile@@"  ->  TypeDescriptor            (the name sits at TD+0x10)
+ *                     ->  CompleteObjectLocator      (its +0x0C is the TD's RVA)
+ *                     ->  the vtable                 (its [-8] holds the locator's address)
+ *                     ->  count the code slots       = the interface's shape
+ *
+ * The trailing NUL makes the name match exact, so ".?AVidFileSystem@@" cannot alias ".?AVidFile@@". Both
+ * the name and the resulting vtable are unique in the image (verified on both builds).
+ *
+ * Returns the slot count, or -1 if the chain cannot be walked (caller then declines to install rather than
+ * serve streams through a layout it could not confirm). */
+#define OV_IDFILE_CLASS ".?AVidFile@@"
+
+static int vtable_code_slots(const uint8_t *vt, const uint8_t *text, size_t text_n)
+{
+    int n = 0;
+    for (; n < 512; n++) {
+        const uint8_t *p = NULL;
+        if (!safe_read_n(vt + (size_t)n * sizeof p, (uint8_t *)&p, sizeof p)) break;
+        if (p < text || p >= text + text_n) break;   /* not a method -> the next class's RTTI locator */
+    }
+    return n;
+}
+
+static int engine_idfile_slots(const uint8_t *module_base)
+{
+    const uint8_t *text = NULL, *rdata = NULL, *dsec = NULL;
+    size_t text_n = 0, rdata_n = 0, dsec_n = 0;
+    if (!section_span(module_base, ".text", &text, &text_n)) return -1;
+    if (!section_span(module_base, OV_SECTION_NAME_RDATA, &rdata, &rdata_n)) return -1;
+    if (!section_span(module_base, ".data", &dsec, &dsec_n)) return -1;
+
+    __try {
+        /* 1. the mangled name (TypeDescriptors live in .data) -> the TypeDescriptor at name-0x10. */
+        static const char cls[] = OV_IDFILE_CLASS;
+        const size_t clen = sizeof cls;             /* includes the NUL -> exact, non-prefix match */
+        const uint8_t *name_at = NULL;
+        for (size_t i = 0; i + clen <= dsec_n; i++) {
+            const uint8_t *q = (const uint8_t *)memchr(dsec + i, cls[0], dsec_n - i - clen + 1);
+            if (!q) break;
+            if (memcmp(q, cls, clen) == 0) { name_at = q; break; }
+            i = (size_t)(q - dsec);                 /* resume just past this candidate */
+        }
+        if (!name_at || (size_t)(name_at - module_base) < 0x10) return -1;
+        const uint32_t td_rva = (uint32_t)((name_at - 0x10) - module_base);
+
+        /* 2. the locator pointing at that TypeDescriptor (COL+0x0C holds the TD's RVA).
+         *
+         * A TypeDescriptor's RVA appears in .rdata in more than one kind of RTTI structure, so "some DWORD
+         * equals it" is NOT enough to have found the locator -- treating every such DWORD as a locator
+         * finds two candidates for this class and makes the chain look ambiguous when it is not. Identify
+         * the real one positively, by the two things only a 64-bit locator satisfies:
+         *   signature == 1  (x64; 0 is the 32-bit form, which this image cannot contain), and
+         *   +0x14 == the locator's OWN rva  (the x64 self-reference).
+         * That is unique in both builds; the impostor has signature 0 and a zero self-reference. */
+        const uint8_t *col = NULL;
+        for (size_t off = 0x0C; off + sizeof(uint32_t) <= rdata_n; off += 4) {
+            uint32_t v = 0;
+            if (!safe_read_n(rdata + off, (uint8_t *)&v, sizeof v)) continue;
+            if (v != td_rva) continue;
+            const uint8_t *c = rdata + off - 0x0C;
+            uint32_t sig = 0, pself = 0;
+            if (!safe_read_n(c, (uint8_t *)&sig, sizeof sig)) continue;
+            if (sig != 1) continue;                             /* x64 locators only */
+            if (!safe_read_n(c + 0x14, (uint8_t *)&pself, sizeof pself)) continue;
+            if (pself != (uint32_t)(c - module_base)) continue;  /* the x64 self-reference */
+            if (col) return -1;                     /* genuinely ambiguous -> refuse rather than pick one */
+            col = c;
+        }
+        if (!col) return -1;
+
+        /* 3. the vtable whose [-8] holds that locator's address. Unique, like the locator: an ambiguous
+         *    chain is not something to pick a winner from. */
+        const uint8_t *vt = NULL;
+        for (size_t s = 0; s + sizeof(void *) <= rdata_n; s += sizeof(void *)) {
+            const uint8_t *e = NULL;
+            if (!safe_read_n(rdata + s, (uint8_t *)&e, sizeof e)) continue;
+            if (e != col) continue;
+            if (vt) return -1;                      /* >1 vtable for this class -> refuse */
+            vt = rdata + s + sizeof(void *);
+        }
+        if (!vt) return -1;
+        int n = vtable_code_slots(vt, text, text_n);
+        return n > 0 ? n : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+
 /* The unique 8-aligned .rdata slot holding `method`, or NULL if absent/ambiguous. Reads the live mapped
  * image (the PE headers + section table are present in memory), SEH-guarded across uncommitted tails. */
 static void **find_slot_holding(const uint8_t *module_base, void *method)
@@ -420,6 +636,24 @@ int sh_overrides_install(const uint8_t *module_base, void *open_fn)
         return 1;
     }
 
+    /* Which idFile interface is this engine? Our stream is called back through the engine's slot order, so
+     * a layout we cannot confirm means we must not hand out streams at all -- serving one through a guessed
+     * order does not fault, it silently runs the wrong method and hangs the game. Refuse instead. */
+    int slots = engine_idfile_slots(module_base);
+    if (slots == 24 + 7) {           /* the original interface: our 24 methods + 7 slots the engine never calls */
+        g_stream_vtable = g_stream_vtable_v31;
+    } else if (slots == 26 + 8) {    /* the current interface: two virtuals inserted (index 3 and index 10) */
+        g_stream_vtable = g_stream_vtable_v34;
+    } else {
+        _snprintf_s(line, sizeof line, _TRUNCATE,
+                    "B1: overrides file-shadow SKIPPED -- the engine's idFile interface has %d virtual(s), "
+                    "which is neither layout we know (31 or 34). Our stream would be called through an "
+                    "unverified slot order, so we do not install: no overrides and no \"*Custom\" tab, but "
+                    "the game runs. Re-derive the slot order for this build.", slots);
+        backend_log(line);
+        return 0;
+    }
+
     /* The one lookup: the unique .rdata slot holding the resolved method. See find_slot_holding. */
     void **slot = find_slot_holding(module_base, open_fn);
     if (slot == NULL) {
@@ -455,8 +689,9 @@ int sh_overrides_install(const uint8_t *module_base, void *open_fn)
      * this line is the evidence that we located it rather than assumed it. */
     _snprintf_s(line, sizeof line, _TRUNCATE,
         "B1: overrides file-shadow installed (open-by-name %p found in slot %p [rva 0x%llX], orig open=%p); "
-        "root=%s\\overrides",
-        open_fn, (void *)slot, (unsigned long long)((const uint8_t *)slot - module_base), orig, g_root);
+        "engine idFile has %d virtuals -> stream slot order v%d; root=%s\\overrides",
+        open_fn, (void *)slot, (unsigned long long)((const uint8_t *)slot - module_base), orig,
+        slots, slots, g_root);
     backend_log(line);
     return 1;
 }
