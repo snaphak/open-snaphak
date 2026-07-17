@@ -109,7 +109,7 @@ time during live testing.
   highlighted text's color to `transparent` too, so highlighting a range of text hid it under the selection
   background instead of showing it. Now uses the theme's `--selText` color (already defined for exactly this
   purpose, just never wired to the textarea's `::selection`).
-- **Dropped the schema-status note** ("schema: `<class>` · N fields" / "not in the N-class schema") above
+- **Dropped the schema-status note** ("schema: `<class>` - N fields" / "not in the N-class schema") above
   the Decl Text editor -- not something users need day to day. The problem/warning count next to it (and the
   schema check that feeds it) is untouched; only the note itself is gone.
 - **Classname/Inherit dropdowns were too small.** Long decl-class slugs (e.g.
