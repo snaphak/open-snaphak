@@ -505,7 +505,6 @@
 
   <div class="statusbar">
     <span><span class="dot" id="bridgeDot"></span><b id="verText">Snapmap+</b> <span id="connText">connecting...</span></span>
-    <span>Entities: <b id="entCount">?</b> <span class="muted" id="hiddenNote"></span></span>
     <span>Selected: <b id="selCount">0</b></span>
     <span class="spacer"></span>
     <span id="stamp"></span>
@@ -1521,11 +1520,6 @@
 
     var vis = showHidden ? allEntities : allEntities.filter(function(e){return !e.hidden;});
     var rows = vis.filter(function(e){ return !filter || e.id.toLowerCase().indexOf(filter)!==-1 || (e.name && e.name.toLowerCase().indexOf(filter)!==-1); });
-
-    var hiddenCount = allEntities.filter(function(e){return e.hidden;}).length;
-    var shownCount = showHidden ? allEntities.length : (allEntities.length - hiddenCount);
-    document.getElementById('entCount').textContent = shownCount;
-    document.getElementById('hiddenNote').textContent = hiddenCount>0 ? ('('+hiddenCount+(showHidden?' hidden shown':' hidden')+')') : '';
 
     visibleEids = rows.map(function(e){return e.eid;});
     document.getElementById('entBadge').textContent = rows.length;   // panel-header count: rows actually shown

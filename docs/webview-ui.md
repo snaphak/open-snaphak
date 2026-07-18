@@ -85,6 +85,13 @@ through it).
 Newest first. Each dated entry covers one working session's worth of change; the undated **Baseline**
 entry at the bottom is the original POC buildout, before this doc tracked dates per entry.
 
+### 2026-07-18 -- Status bar: drop the redundant entity count
+
+- **Removed `Entities: N (hidden)` from the status bar.** The count (and hidden-count note) duplicated
+  what the Entities tab's own panel-header badge already shows live, now that panel titles carry that
+  context -- kept `Selected: N` only. Dropped `entCount`/`hiddenNote` from the markup and their
+  assignment in `renderList()`.
+
 ### 2026-07-18 -- Crash-report dialog
 
 - **Crash reporting**, the feedback pipeline's second producer. When the game hits a serious fault, the
