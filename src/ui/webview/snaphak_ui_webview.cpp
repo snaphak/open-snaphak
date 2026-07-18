@@ -633,6 +633,14 @@ static bool poc_prefab_file_path(const std::string &folder, const std::string &n
     std::string fname = name + ".json";
     return g_iface->vtbl->resolve_prefab_path(g_iface, prefix.c_str(), fname.c_str(), out, cap) && out[0] != '\0';
 }
+/* The metadata sidecar (description + tags) rides beside its prefab as "<name>.meta.json" -- resolved
+ * through the same validated path helper (the ".meta" suffix is part of the stem), so it inherits the
+ * path-safety gate. The prefab .json itself stays byte-exact engine JSON (it IS the staged paste
+ * payload), which is why metadata lives in a sidecar and not inside the prefab file. */
+static bool poc_prefab_meta_path(const std::string &folder, const std::string &name, char *out, int cap)
+{
+    return poc_prefab_file_path(folder, name + ".meta", out, cap);
+}
 static void poc_strip_trailing_sep(char *s)
 {
     size_t n = strlen(s);
@@ -648,7 +656,12 @@ static void poc_list_json_dir(const std::string &dirPath, std::vector<std::strin
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         std::string fn = fd.cFileName;
-        if (fn.size() > 5 && fn.compare(fn.size() - 5, 5, ".json") == 0) names.push_back(fn.substr(0, fn.size() - 5));
+        if (fn.size() > 5 && fn.compare(fn.size() - 5, 5, ".json") == 0) {
+            std::string stem = fn.substr(0, fn.size() - 5);
+            /* "<name>.meta.json" is a metadata sidecar, not a prefab -- never list it as one */
+            if (stem.size() > 5 && stem.compare(stem.size() - 5, 5, ".meta") == 0) continue;
+            names.push_back(stem);
+        }
     } while (FindNextFileA(h, &fd));
     FindClose(h);
     std::sort(names.begin(), names.end());
@@ -663,6 +676,10 @@ static void poc_apply_delete_prefab()
     char path[1024];
     if (!poc_prefab_file_path(g_delete_prefab_folder, g_delete_prefab_name, path, (int)sizeof path)) return;
     g_delete_result = DeleteFileA(path) ? 1 : 0;
+    if (g_delete_result == 1) {   /* the sidecar goes with its prefab; absent is fine */
+        char mp[1024];
+        if (poc_prefab_meta_path(g_delete_prefab_folder, g_delete_prefab_name, mp, (int)sizeof mp)) DeleteFileA(mp);
+    }
 }
 /* Rename a prefab file WITHIN its current folder: MoveFileA old->new. MoveFileA refuses to overwrite an
  * existing destination (returns 0), so a name collision is a safe no-op the UI reports; the JS also
@@ -675,6 +692,12 @@ static void poc_apply_rename_prefab()
     if (!poc_prefab_file_path(g_rename_prefab_folder, g_rename_prefab_old, oldp, (int)sizeof oldp)) return;
     if (!poc_prefab_file_path(g_rename_prefab_folder, g_rename_prefab_new, newp, (int)sizeof newp)) return;
     g_rename_result = MoveFileA(oldp, newp) ? 1 : 0;
+    if (g_rename_result == 1) {   /* the sidecar follows the rename; absent is fine */
+        char oldm[1024], newm[1024];
+        if (poc_prefab_meta_path(g_rename_prefab_folder, g_rename_prefab_old, oldm, (int)sizeof oldm) &&
+            poc_prefab_meta_path(g_rename_prefab_folder, g_rename_prefab_new, newm, (int)sizeof newm))
+            MoveFileA(oldm, newm);
+    }
 }
 /* Load/Place: read the prefab file's raw JSON off disk, clear the current editor selection FIRST (so
  * nothing else is selected once the user pastes it), then schedule a kind=1 (mkcmd) apply item to stage
@@ -764,6 +787,12 @@ static void poc_apply_move_prefab()
     if (!poc_prefab_file_path(g_move_prefab_from, g_move_prefab_name, oldp, (int)sizeof oldp)) return;
     if (!poc_prefab_file_path(g_move_prefab_to, g_move_prefab_name, newp, (int)sizeof newp)) return;
     g_move_prefab_result = MoveFileA(oldp, newp) ? 1 : 0;
+    if (g_move_prefab_result == 1) {   /* the sidecar follows the move; absent is fine */
+        char oldm[1024], newm[1024];
+        if (poc_prefab_meta_path(g_move_prefab_from, g_move_prefab_name, oldm, (int)sizeof oldm) &&
+            poc_prefab_meta_path(g_move_prefab_to, g_move_prefab_name, newm, (int)sizeof newm))
+            MoveFileA(oldm, newm);
+    }
 }
 /* Create a real subdirectory under prefabs\. result: 1 created, 0 empty name / already exists, -1 failed. */
 static void poc_apply_create_folder()
@@ -1103,12 +1132,30 @@ static void poc_tally_prefab(const std::string &body, int *entityCount, std::vec
 }
 /* read a single prefab file (resolved via +0xc0) and push its entity count + per-class tally so the
  * Prefabs tab detail pane can show real numbers instead of the old static mockup values. folder="" -> root. */
+/* read a small sidecar/aux file fully; refuses anything over 64 KB (metadata is tiny -- a huge file
+ * here is not ours). Returns false on missing/oversize/unreadable. */
+static bool poc_read_small_file(const char *path, std::string &body)
+{
+    FILE *fp = nullptr;
+    if (fopen_s(&fp, path, "rb") != 0 || !fp) return false;
+    fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
+    bool ok = false;
+    if (sz > 0 && sz <= 64 * 1024) {
+        body.resize((size_t)sz);
+        size_t got = fread(&body[0], 1, (size_t)sz, fp);
+        body.resize(got);
+        ok = true;
+    }
+    fclose(fp);
+    return ok;
+}
 static void poc_send_prefab_detail(const std::string &name, const std::string &folder)
 {
     if (!g_webview) return;
     int entityCount = 0;
     std::vector<std::pair<std::string, int>> tally;
     bool ok = false;
+    std::string metaBody;
     if (!name.empty()) {
         char path[1024];
         if (poc_prefab_file_path(folder, name, path, (int)sizeof path)) {
@@ -1125,10 +1172,16 @@ static void poc_send_prefab_detail(const std::string &name, const std::string &f
                 fclose(fp);
             }
         }
+        char mp[1024];
+        /* the sidecar body ships as an ESCAPED STRING (the page JSON.parses it with a try/catch), never
+         * spliced raw -- a hand-edited/truncated sidecar must not be able to invalidate this whole
+         * message (PostWebMessageAsJson silently drops a malformed payload). */
+        if (ok && poc_prefab_meta_path(folder, name, mp, (int)sizeof mp)) poc_read_small_file(mp, metaBody);
     }
     std::wstring json = L"{\"kind\":\"prefabDetail\",\"name\":\""; json += poc_json_w(name.c_str());
     json += L"\",\"ok\":"; json += ok ? L"true" : L"false";
-    json += L",\"count\":"; json += std::to_wstring(entityCount);
+    json += L",\"meta\":\""; json += poc_json_w(metaBody.c_str());
+    json += L"\",\"count\":"; json += std::to_wstring(entityCount);
     json += L",\"types\":[";
     for (size_t i = 0; i < tally.size(); i++) {
         if (i) json += L",";
@@ -1139,10 +1192,38 @@ static void poc_send_prefab_detail(const std::string &name, const std::string &f
     g_webview->PostWebMessageAsJson(json.c_str());
 }
 
+/* extract a sidecar's "tags" array as individual strings (targeted find-key scan, the same approach as
+ * poc_tally_prefab -- no JSON library). The values are re-escaped fresh on emit; sidecar bytes are NEVER
+ * spliced into an outgoing message raw, so a malformed/hand-edited sidecar can only lose its own tags,
+ * never invalidate the whole prefabs message. */
+static bool poc_read_meta_tags(const std::string &folder, const std::string &name, std::vector<std::string> &tags)
+{
+    char path[1024];
+    if (!poc_prefab_meta_path(folder, name, path, (int)sizeof path)) return false;
+    std::string body;
+    if (!poc_read_small_file(path, body)) return false;
+    size_t k = body.find("\"tags\"");
+    if (k == std::string::npos) return false;
+    size_t lb = body.find('[', k); if (lb == std::string::npos) return false;
+    size_t rb = body.find(']', lb); if (rb == std::string::npos) return false;   /* flat string array -- no nesting */
+    size_t p = lb + 1;
+    while (p < rb) {
+        size_t q1 = body.find('"', p); if (q1 == std::string::npos || q1 >= rb) break;
+        size_t q2 = q1 + 1;
+        while (q2 < rb && body[q2] != '"') q2++;   /* the page strips quotes/backslashes from tags on save */
+        if (q2 >= rb) break;
+        if (q2 > q1 + 1) tags.push_back(body.substr(q1 + 1, q2 - q1 - 1));
+        p = q2 + 1;
+    }
+    return true;
+}
+
 /* enumerate %USERPROFILE%\snaphak\prefabs\ (resolved via the +0xc0 interface slot, the same path the
  * original's Prefabs tab lists): the root *.json files, plus one real level
  * of subdirectories (each a "folder"), each listing its own *.json files. No nested-within-nested. Empty
- * (or missing dir) sends empty arrays so the UI can show its empty state. */
+ * (or missing dir) sends empty arrays so the UI can show its empty state. The trailing "meta" map carries
+ * each prefab's sidecar tags ("<folder>/<name>" or "<name>" -> ["tag",...], tagged entries only) so the
+ * list filter can match on tags without a per-prefab round trip. */
 static void poc_send_prefabs()
 {
     if (!g_webview) return;
@@ -1188,8 +1269,52 @@ static void poc_send_prefabs()
         }
         json += L"]}";
     }
-    json += L"]}";
+    json += L"],\"meta\":{";
+    bool firstMeta = true;
+    auto emitTags = [&](const std::string &folder, const std::string &name) {
+        std::vector<std::string> tags;
+        if (!poc_read_meta_tags(folder, name, tags) || tags.empty()) return;
+        if (!firstMeta) json += L","; firstMeta = false;
+        std::string key = folder.empty() ? name : (folder + "/" + name);
+        json += L"\""; json += poc_json_w(key.c_str()); json += L"\":[";
+        for (size_t t = 0; t < tags.size(); t++) {
+            if (t) json += L",";
+            json += L"\""; json += poc_json_w(tags[t].c_str()); json += L"\"";
+        }
+        json += L"]";
+    };
+    for (size_t i = 0; i < rootNames.size(); i++) emitTags("", rootNames[i]);
+    for (size_t i = 0; i < folders.size(); i++)
+        for (size_t j = 0; j < folders[i].second.size(); j++) emitTags(folders[i].first, folders[i].second[j]);
+    json += L"}}";
     g_webview->PostWebMessageAsJson(json.c_str());
+}
+
+/* write (or, with an empty body, delete) a prefab's metadata sidecar. Runs directly in the message
+ * callback like selectPrefab -- pure Win32 file I/O, no engine touch. Posts savePrefabMetaResult, then a
+ * fresh prefabs list (the tag map feeds the list filter). */
+static void poc_apply_save_prefab_meta(const std::string &name, const std::string &folder, const std::string &body)
+{
+    int result = -1;
+    char path[1024];
+    if (!name.empty() && poc_prefab_meta_path(folder, name, path, (int)sizeof path)) {
+        if (body.empty()) {
+            DeleteFileA(path);   /* no metadata left -> no sidecar (a missing file is already the goal state) */
+            result = 1;
+        } else {
+            FILE *fp = nullptr;
+            if (fopen_s(&fp, path, "wb") == 0 && fp) {
+                size_t put = fwrite(body.data(), 1, body.size(), fp);
+                fclose(fp);
+                result = (put == body.size()) ? 1 : -1;
+            }
+        }
+    }
+    if (!g_webview) return;
+    std::wstring m = L"{\"kind\":\"savePrefabMetaResult\",\"result\":"; m += std::to_wstring(result);
+    m += L",\"name\":\""; m += poc_json_w(name.c_str()); m += L"\"}";
+    g_webview->PostWebMessageAsJson(m.c_str());
+    if (result == 1) poc_send_prefabs();
 }
 
 /* ------------------------------------------------------------------ window / WebView2 -------------- */
@@ -1250,6 +1375,9 @@ static HRESULT on_message(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventA
             } else if (cmd == L"selectPrefab") {
                 std::wstring nm, fo; json_get_wstr(json, L"name", nm); json_get_wstr(json, L"folder", fo);
                 poc_send_prefab_detail(w_to_utf8(nm), w_to_utf8(fo));
+            } else if (cmd == L"savePrefabMeta") {
+                std::wstring nm, fo, body; json_get_wstr(json, L"name", nm); json_get_wstr(json, L"folder", fo); json_get_wstr(json, L"body", body);
+                poc_apply_save_prefab_meta(w_to_utf8(nm), w_to_utf8(fo), w_to_utf8(body));
             } else if (cmd == L"createPrefab") {
                 std::wstring nm; json_get_wstr(json, L"name", nm);
                 g_create_prefab_name = w_to_utf8(nm);

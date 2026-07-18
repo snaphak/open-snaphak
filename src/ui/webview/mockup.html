@@ -145,10 +145,21 @@
   /* decl code editor: token-colored <pre> behind a transparent <textarea> */
   .code-editor { position: relative; flex: 1; min-height: 120px; border: 1px solid var(--border2); border-radius: 5px; background: var(--field); overflow: hidden; }
   .code-editor pre, .code-editor textarea {
-    position: absolute; inset: 0; margin: 0; padding: 6px 8px; border: none; border-radius: 0;
+    position: absolute; top: 0; right: 0; bottom: 0; left: var(--ceGutterW, 30px); margin: 0; padding: 6px 8px; border: none; border-radius: 0;
     font-family: Consolas, "Courier New", monospace; font-size: 11.5px; line-height: 1.5;
     white-space: pre; tab-size: 4; -moz-tab-size: 4;
   }
+  /* line-number gutter: a third fixed layer with the SAME font metrics (family/size/line-height) and the
+     same 6px top padding as the pre/textarea, so its rows align 1:1 with the text. It has no scrollbar of
+     its own -- refreshDeclScroll() translates the inner column by -scrollTop. The pre/textarea start at
+     --ceGutterW, which updateDeclGutter() (JS) widens as the line count gains digits, so the numbers never
+     clip. Works identically in the default and focus-mode layouts (both just resize .code-editor). */
+  .code-editor .ce-gutter { position: absolute; left: 0; top: 0; bottom: 0; width: var(--ceGutterW, 30px);
+    overflow: hidden; background: var(--panel2); border-right: 1px solid var(--border2);
+    pointer-events: none; user-select: none; }
+  .code-editor .ce-gutter > div { padding: 6px 6px 6px 0; text-align: right;
+    font-family: Consolas, "Courier New", monospace; font-size: 11.5px; line-height: 1.5;
+    white-space: pre; color: var(--muted); }
   .code-editor pre { overflow: hidden; pointer-events: none; color: var(--text); }
   .code-editor textarea { overflow: auto; background: transparent; color: transparent; caret-color: var(--text); resize: none; }
   /* the textarea text is normally transparent (the colored <pre> shows through), but a transparent
@@ -386,6 +397,7 @@
           <button type="button" class="btn icon" id="declFocusBtn" title="Focus mode (Esc to exit)">&#10531;</button>
         </div>
         <div class="code-editor" id="codeEditor">
+          <div class="ce-gutter" aria-hidden="true"><div id="declGutter"></div></div>
           <pre aria-hidden="true"><code id="declHl"></code></pre>
           <textarea id="declText" spellcheck="false" autocomplete="off" wrap="off"></textarea>
           <div class="ac-popup" id="acPopup"></div>
@@ -410,7 +422,7 @@
         </div>
       </div>
       <div class="panel-toolbar">
-        <input type="text" id="prefabFilter" placeholder="Filter prefabs...">
+        <input type="text" id="prefabFilter" placeholder="Filter by name or tag...">
       </div>
       <div class="panel-body list" id="prefabTree"></div>
     </div>
@@ -430,9 +442,9 @@
         <div class="pc-chips" id="pcChips"></div>
         <div class="pc-meta muted" id="pcMeta"></div>
         <label>Description</label>
-        <textarea class="pc-desc" id="pcDesc" placeholder="Descriptions aren't stored yet -- a later step" disabled></textarea>
+        <textarea class="pc-desc" id="pcDesc" placeholder="What is this prefab for? Saved automatically when you leave the field."></textarea>
         <label>Tags</label>
-        <input type="text" id="pcTags" placeholder="Tags aren't stored yet -- a later step" disabled>
+        <input type="text" id="pcTags" placeholder="comma, separated, tags -- the filter box matches them">
       </div>
     </div>
   </div>
@@ -615,7 +627,15 @@
   };
   function previewFolderIndex(name) { for (var i = 0; i < previewPrefabs.folders.length; i++) if (previewPrefabs.folders[i].name === name) return i; return -1; }
   function previewFolderList(folder) { if (!folder) return previewPrefabs.root; var idx = previewFolderIndex(folder); return idx === -1 ? null : previewPrefabs.folders[idx].items; }
-  function previewSendPrefabs() { onMessage({kind:'prefabs', root: previewPrefabs.root, folders: previewPrefabs.folders}); }
+  var previewMetaBodies = {};   // preview stand-in for the "<name>.meta.json" sidecars, keyed "<folder>/<name>"
+  function previewMetaMap() {
+    var m = {};
+    for (var k in previewMetaBodies) {
+      try { var p = JSON.parse(previewMetaBodies[k]); if (p && Array.isArray(p.tags) && p.tags.length) m[k] = p.tags; } catch (e) {}
+    }
+    return m;
+  }
+  function previewSendPrefabs() { onMessage({kind:'prefabs', root: previewPrefabs.root, folders: previewPrefabs.folders, meta: previewMetaMap()}); }
   var previewPrefabDetails = {
     'AirLock Door': {count: 3, types: [{className:'idVolume_Trigger_Editable', count:1}, {className:'idDoor_Coop', count:2}]},
     'Corpse Dropper': {count: 2, types: [{className:'idAI_Snapmap', count:1}, {className:'idVolume_Trigger_Editable', count:1}]},
@@ -690,8 +710,15 @@
     else if (o.cmd === 'listPrefabs') { previewSendPrefabs(); }
     else if (o.cmd === 'selectPrefab') {
       var d = previewPrefabDetails[o.name];
-      onMessage(d ? {kind:'prefabDetail', name:o.name, ok:true, count:d.count, types:d.types}
+      var mk = (o.folder ? o.folder + '/' : '') + o.name;
+      onMessage(d ? {kind:'prefabDetail', name:o.name, ok:true, meta: previewMetaBodies[mk] || '', count:d.count, types:d.types}
                   : {kind:'prefabDetail', name:o.name, ok:false});
+    }
+    else if (o.cmd === 'savePrefabMeta') {
+      var smk = (o.folder ? o.folder + '/' : '') + o.name;
+      if (o.body) previewMetaBodies[smk] = o.body; else delete previewMetaBodies[smk];
+      onMessage({kind:'savePrefabMetaResult', result:1, name:o.name});
+      previewSendPrefabs();
     }
     else if (o.cmd === 'createPrefab') {
       if (editorSelCount <= 0) { onMessage({kind:'createPrefabResult', result:0, name:o.name}); return; }
@@ -1215,11 +1242,29 @@
     schemaCheck(p.rootEntries, cls, p.diags);
     renderHl(text, declTokens, p.diags);
     renderProblems(p.diags);
+    updateDeclGutter(text);
     refreshDeclScroll();
+  }
+  // Rebuild the line-number column only when the LINE COUNT changes (refreshDecl runs per keystroke, and
+  // scroll events must stay cheap -- the translate in refreshDeclScroll is the only per-scroll work).
+  // The gutter width follows the digit count so 4-digit files don't clip; caretXY() (the autocomplete
+  // popup anchor) reads ceGutterW too, since the text no longer starts at the container's left edge.
+  var gutterLineCount = -1, ceGutterW = 30;
+  function updateDeclGutter(text) {
+    var n = text.split('\n').length;
+    if (n === gutterLineCount) return;
+    gutterLineCount = n;
+    var buf = [];
+    for (var i = 1; i <= n; i++) buf.push(i);
+    $('declGutter').textContent = buf.join('\n');
+    var digits = String(n).length; if (digits < 2) digits = 2;
+    var w = Math.ceil(digits * (charW || 6.9)) + 12;   // digits + the column's 6px right pad + breathing room
+    if (w !== ceGutterW) { ceGutterW = w; $('codeEditor').style.setProperty('--ceGutterW', w + 'px'); }
   }
   function refreshDeclScroll() {
     var ta = $('declText'), pre = $('codeEditor').querySelector('pre');
     pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft;
+    $('declGutter').style.transform = 'translateY(' + (-ta.scrollTop) + 'px)';
   }
 
   // -- autocomplete: field names scoped to the { } nesting at the cursor; true/false for bool fields --
@@ -1302,7 +1347,7 @@
     var lineText = before.slice(before.lastIndexOf('\n') + 1);
     var vcol = 0;
     for (var i = 0; i < lineText.length; i++) vcol = lineText[i] === '\t' ? (Math.floor(vcol / 4) + 1) * 4 : vcol + 1;
-    return {x: 8 + vcol * charW - ta.scrollLeft, y: 6 + (lineNo + 1) * lineH - ta.scrollTop};
+    return {x: ceGutterW + 8 + vcol * charW - ta.scrollLeft, y: 6 + (lineNo + 1) * lineH - ta.scrollTop};
   }
   function acRender() {
     var pop = $('acPopup');
@@ -2423,9 +2468,13 @@
     } else if (d.kind === 'camera') {
       setCamField('camX', d.x); setCamField('camY', d.y); setCamField('camZ', d.z);
     } else if (d.kind === 'prefabs') {
+      prefabTags = d.meta || {};
       renderPrefabList(d.root || [], d.folders || []);
     } else if (d.kind === 'prefabDetail') {
       renderPrefabDetail(d);
+    } else if (d.kind === 'savePrefabMetaResult') {
+      if (d.result === 1) toast('Saved details for "' + d.name + '"', 'ok');
+      else toast('Could not save details for "' + d.name + '"', 'err');
     } else if (d.kind === 'tlUseSelectionResult') {
       if (!tlModel) { /* panel closed before the reply came back (e.g. editorReopened) -- nothing to apply it to */ }
       else if (!d.ok) {
@@ -2505,6 +2554,7 @@
   // prefabs: root *.json files + one real level of subdirectories (folders), read fresh from disk on
   // every refresh -- the filesystem IS the truth, no separate client-side folder state to desync.
   var prefabData = {root: [], folders: []};
+  var prefabTags = {};   // "<folder>/<name>" (or "<name>" at root) -> [tags], from the list message's meta map
   var currentPrefabNames = [];   // root names only -- Create-from-selection always targets root
   function allPrefabNamesInFolder(folder) {
     if (!folder) return prefabData.root.slice();
@@ -2532,13 +2582,20 @@
     }
     var filterEl = document.getElementById('prefabFilter');
     var filter = filterEl ? filterEl.value.toLowerCase() : '';
-    var match = function(n){ return !filter || n.toLowerCase().indexOf(filter) !== -1; };
-    var rootShown = root.filter(match);
+    // the filter matches the NAME or any sidecar TAG -- cross-folder search is what tags are for
+    var match = function(inFolder){ return function(n){
+      if (!filter) return true;
+      if (n.toLowerCase().indexOf(filter) !== -1) return true;
+      var tg = prefabTags[(inFolder ? inFolder + '/' : '') + n] || [];
+      for (var ti = 0; ti < tg.length; ti++) if (String(tg[ti]).toLowerCase().indexOf(filter) !== -1) return true;
+      return false;
+    }; };
+    var rootShown = root.filter(match(''));
     var h = '';
     var anyShown = rootShown.length > 0;
     for (var f = 0; f < folders.length; f++) {
       var folder = folders[f];
-      var items = (folder.items || []).filter(match);
+      var items = (folder.items || []).filter(match(folder.name));
       if (filter && items.length === 0) continue;
       anyShown = true;
       h += '<div class="pf-folder pf-open" data-folder-name="' + esc(folder.name) + '">'
@@ -2567,10 +2624,18 @@
   // aren't stored anywhere yet (the prefab JSON has no metadata field) -- disabled until a sidecar file lands.
   function renderPrefabDetail(d) {
     var card = document.getElementById('prefabCard'), empty = document.getElementById('pcEmpty');
-    if (!d.ok) { card.style.display = 'none'; empty.style.display = 'block'; empty.textContent = 'Could not read "' + d.name + '".'; setPrefabButtons(false); return; }
+    if (!d.ok) { card.style.display = 'none'; empty.style.display = 'block'; empty.textContent = 'Could not read "' + d.name + '".'; setPrefabButtons(false); metaBaseline = null; return; }
     empty.style.display = 'none'; card.style.display = 'flex';
     setPrefabButtons(true);
     document.getElementById('pcName').value = d.name;
+    // the sidecar body ships as a string; a missing/malformed sidecar just means "no metadata yet"
+    var meta = {};
+    if (d.meta) { try { meta = JSON.parse(d.meta) || {}; } catch (e) { meta = {}; } }
+    var mDesc = (typeof meta.desc === 'string') ? meta.desc : '';
+    var mTags = Array.isArray(meta.tags) ? meta.tags : [];
+    document.getElementById('pcDesc').value = mDesc;
+    document.getElementById('pcTags').value = mTags.join(', ');
+    metaBaseline = mDesc.trim() + '\u0000' + parseTagsInput(mTags.join(',')).join(',');
     var types = d.types || [];
     var chips = '';
     for (var i = 0; i < types.length; i++) chips += '<span class="pc-chip">' + types[i].count + ' &times; ' + esc(types[i].className) + '</span>';
@@ -3085,12 +3150,12 @@
     });
   }
   function clearPrefabSelection() {
-    selectedPrefabName = ''; selectedPrefabFolder = '';
+    selectedPrefabName = ''; selectedPrefabFolder = ''; metaBaseline = null;
     if (prefabTree) prefabTree.querySelectorAll('.pf-item.selected').forEach(function(s){ s.classList.remove('selected'); });
     var card = document.getElementById('prefabCard'), empty = document.getElementById('pcEmpty');
     if (card) card.style.display = 'none';
     if (empty) { empty.style.display = 'block'; empty.textContent = 'Select a prefab to see its details.'; }
-    var nm = document.getElementById('pcName'); if (nm) nm.value = '';
+    ['pcName', 'pcDesc', 'pcTags'].forEach(function(id){ var el = document.getElementById(id); if (el) el.value = ''; });
     setPrefabButtons(false);
   }
   if (prefabTree) {
@@ -3238,6 +3303,32 @@
   if (prefabDeleteBtn) prefabDeleteBtn.addEventListener('click', function(){
     var name = document.getElementById('pcName').value; if (!name) return;
     showConfirm('Delete "' + name + '"? This removes the file from disk.', function(){ post({cmd:'deletePrefab', name: name, folder: selectedPrefabFolder}); });
+  });
+  // Description + Tags -- stored in a "<name>.meta.json" sidecar next to the prefab (the prefab .json
+  // itself stays byte-exact engine JSON: it IS the staged paste payload, so metadata never goes inside
+  // it). Saved automatically on leaving a field, only when actually changed; clearing both fields
+  // deletes the sidecar. Tags are what the list filter matches across folders (see renderPrefabTree).
+  var metaBaseline = null;   // desc+tags signature of the LOADED selection; null = nothing loaded
+  function parseTagsInput(v) {
+    // quotes/backslashes are stripped so a tag can never break the sidecar's JSON or the tag map scan
+    return (v || '').split(',').map(function(t){ return t.replace(/["\\]/g, '').trim(); }).filter(function(t){ return !!t; });
+  }
+  function savePrefabMetaIfChanged() {
+    if (!selectedPrefabName || metaBaseline === null) return;
+    var desc = document.getElementById('pcDesc').value.trim();
+    var tags = parseTagsInput(document.getElementById('pcTags').value);
+    var sig = desc + '\u0000' + tags.join(',');
+    if (sig === metaBaseline) return;
+    metaBaseline = sig;
+    var body = (desc || tags.length) ? JSON.stringify({desc: desc, tags: tags}) : '';
+    post({cmd:'savePrefabMeta', name: selectedPrefabName, folder: selectedPrefabFolder, body: body});
+  }
+  ['pcDesc', 'pcTags'].forEach(function(id){
+    var el = document.getElementById(id); if (!el) return;
+    el.addEventListener('blur', savePrefabMetaIfChanged);
+  });
+  document.getElementById('pcTags').addEventListener('keydown', function(e){
+    if (e.key === 'Enter') { e.preventDefault(); savePrefabMetaIfChanged(); }
   });
   // selection-aware Create button: editorSelCount is kept live via the native "selCount" broadcast
   // (get_selection, polled every ~330ms independent of the sync checkboxes). PREVIEW has no live editor,

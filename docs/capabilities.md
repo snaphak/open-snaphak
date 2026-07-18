@@ -105,8 +105,8 @@ editor (run `sh` in the console if it doesn't auto-open). Full detail: [`webview
 | Surface | What it does |
 |---|---|
 | Window shell | The Win32 host window + the manual 30 Hz think-loop; a menu bar with a light/dark theme toggle; the always-visible Camera-Origin bar (X/Y/Z track the live editor camera; "Lock Position" pins it). |
-| Entities tab | A filterable entity list (multi-select, a hidden-entity toggle, two-way editor-selection sync; right-click for Copy ID / Delete / Push to stack 0 / Clear stack 0) plus the Entity State panel: classname / inherit / displayname fields and the Decl Text editor — syntax coloring, structural lint, advisory schema checks, a distraction-free focus mode. "Save to Decl" commits the edits in memory. |
-| Prefabs tab | Save and load selection prefabs as JSON files under `%USERPROFILE%\snaphak\prefabs\` — one folder level with rename/delete/drag-between-folders; "Load / Place" stages the prefab and the user pastes it with Ctrl+V. |
+| Entities tab | A filterable entity list (multi-select, a hidden-entity toggle, two-way editor-selection sync; right-click for Copy ID / Delete / Push to stack 0 / Clear stack 0) plus the Entity State panel: classname / inherit / displayname fields and the Decl Text editor — line numbers, syntax coloring, structural lint, advisory schema checks, a distraction-free focus mode. "Save to Decl" commits the edits in memory. |
+| Prefabs tab | Save and load selection prefabs as JSON files under `%USERPROFILE%\snaphak\prefabs\` — one folder level with rename/delete/drag-between-folders; per-prefab description + tags (stored in a `<name>.meta.json` sidecar; the filter box matches tags across folders); "Load / Place" stages the prefab and the user pastes it with Ctrl+V. |
 | Timelines tab | The list of timeline entities; opening one edits its events and per-event parameters, with reference/decl/enum parameters constrained to valid choices, entity pickers for entity-typed args, and per-event documentation. |
 
 ## Hook behaviors

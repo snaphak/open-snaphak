@@ -83,6 +83,35 @@ through it).
 Newest first. Each dated entry covers one working session's worth of change; the undated **Baseline**
 entry at the bottom is the original POC buildout, before this doc tracked dates per entry.
 
+### 2026-07-17 -- Prefab selection gating + metadata sidecars, decl-editor line numbers, placeholder layout fix
+
+- **Prefab Delete / Load / Place are gated on a real selection.** Both buttons start disabled ("Select a
+  prefab first") and enable only when a selected prefab's details actually load; clicking blank space in
+  the prefab list clears the selection (the detail card empties, the buttons grey out). Selection state
+  also survives the tree's innerHTML re-renders now: the selected row is re-marked if the file still
+  exists (even when the filter hides it), and the whole selection is dropped if it was deleted/renamed/
+  moved -- the buttons can never act on a ghost file.
+- **Prefab Description + Tags are real** (previously disabled stubs). Stored in a per-prefab
+  `<name>.meta.json` **sidecar** next to the prefab file -- the prefab `.json` itself stays byte-exact
+  engine JSON (it IS the staged paste payload), so metadata never goes inside it, and there is no central
+  manifest to desync (the directory stays the source of truth). Saved automatically on leaving a field,
+  only when changed; clearing both fields deletes the sidecar; delete/rename/move-to-folder all carry the
+  sidecar along natively; the list enumeration skips `*.meta.json` so a sidecar never shows up as a
+  prefab. The **filter box now matches tags as well as names** (cross-folder search -- the point of tags
+  while prefabs live only on this machine). The tag map rides the `prefabs` list message, and sidecar
+  bytes are re-escaped fresh rather than spliced raw -- a hand-edited/malformed sidecar can only lose its
+  own tags, never invalidate the whole message (the missing-quote lesson from 2026-07-07).
+- **Decl Text editor line numbers**, in both the default and focus-mode layouts: a third gutter layer in
+  the `.code-editor` stack with the same font metrics as the `pre`/`textarea`, so its rows align 1:1.
+  The gutter has no scrollbar of its own -- `refreshDeclScroll()` translates the inner column by
+  `-scrollTop` (scroll stays cheap; the line-number column is rebuilt only when the line COUNT changes).
+  The gutter widens as the count gains digits, and `caretXY()` (the autocomplete-popup anchor) accounts
+  for the shifted text origin.
+- **Multi-select placeholder layout fix** (user-reported, from a screenshot): `#selInfo` is a flex
+  CENTERING container, so the placeholder's text + `<br>` + span were being laid out as separate ROW
+  flex items sitting side-by-side. `showPlaceholder()` now wraps its content in one block so multi-line
+  placeholders stack as normal lines.
+
 ### 2026-07-17 -- Decl Text focus mode, dropdown sizing, and a batch of small editor fixes
 
 A round of small, user-reported polish items on the Entities tab's decl editor, found and fixed one at a
