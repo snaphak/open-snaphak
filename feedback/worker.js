@@ -159,13 +159,15 @@ export default {
      * endpoint + a body scan, NOT the search API: search is eventually-consistent (seconds-to-minutes
      * of index lag), so two reports of the same thing in quick succession -- or one user's double-send
      * -- would slip past it and double-file (observed live, 2026-07-18). Listing open user-report
-     * issues is strongly consistent; up to 3 pages (300 open reports) is far beyond a realistic
-     * tracker. Closed matches are NOT resurrected -- closed means resolved or rejected; a fresh
-     * report opens a fresh issue. */
+     * issues avoids the index; oldest-first, so a match is always the ORIGINAL report and stopping at
+     * the first hit is correct. Up to 3 pages (300 open reports) is far beyond a realistic tracker.
+     * Still best-effort: a sub-second race (two reports arriving together) can double-file -- the
+     * in-app dialog's one-in-flight guard covers the common double-click case. Closed matches are NOT
+     * resurrected -- closed means resolved or rejected; a fresh report opens a fresh issue. */
     let match = null;
     const marker = 'report-sig:' + sig;
     for (let page = 1; page <= 3 && !match; page++) {
-      const batch = await gh(token, '/repos/' + REPO + '/issues?state=open&labels=user-report&per_page=100&page=' + page);
+      const batch = await gh(token, '/repos/' + REPO + '/issues?state=open&labels=user-report&sort=created&direction=asc&per_page=100&page=' + page);
       if (!batch || !batch.length) break;
       match = batch.find(i => !i.pull_request && (i.body || '').includes(marker)) || null;
       if (batch.length < 100) break;
