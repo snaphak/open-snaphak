@@ -24,9 +24,11 @@ foreach ($d in @($backendDll, $uiDll)) {
 }
 
 # --- refuse a -Diag (troubleshooting) backend: it is self-labelled DO NOT DISTRIBUTE. The diagnostic
-#     logger (shield_diag.c) is the only source of the string "snaphak_crash.dmp"; a release build has none. ---
+#     logger (shield_diag.c) is the only source of the string "snaphak_diag.log"; a release build has
+#     none. (The old marker, "snaphak_crash.dmp", stopped being diag-unique when the release fatal
+#     path gained its own crash-dump write for the crash-report dialog.) ---
 $ascii = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($backendDll))
-if ($ascii.Contains("snaphak_crash.dmp")) {
+if ($ascii.Contains("snaphak_diag.log")) {
     throw "build\XINPUT1_3.dll is a -Diag build (DO NOT DISTRIBUTE). Rebuild release with src\backend\build.ps1 (no -Diag)."
 }
 
