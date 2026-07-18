@@ -251,8 +251,11 @@ static DWORD WINAPI bootstrap_thread(LPVOID p)
          * the vtable build-portably, then saves the slot's original + writes our hook into the slot.
          * Pass the resolve STATUS: the ctor is only used to DECODE the vtable LEA, so a hooked prologue
          * (SIG_OK_HOOKED) would corrupt the decode -- refuse on the hook-tolerant fallback. The shadow
-         * is always-live once installed (no arm gate -- it only fires when an overrides/<name> file
-         * exists under %USERPROFILE%\snaphak\, exactly like OG). See overrides.c. */
+         * is always-live once installed (no arm gate) and resolves THREE-LAYER: a user's
+         * overrides/<name> file under %USERPROFILE%\snaphak\ -> our built-in default decls from memory
+         * (the "*Custom" tab set; never written to disk) -> the engine's packaged resource. The user
+         * layer is gated by the snaphak_user_overrides cvar (registered below; the loader's read is
+         * registration-aware so pre-flush opens see the default 1). See overrides.c. */
         void *res_ctor = NULL;
         int   ctor_clean = 0;
         for (size_t i = 0; i < db; i++) {

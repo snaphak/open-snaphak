@@ -14,7 +14,7 @@ research; the third-party runtime it links against (the DOOM engine, Microsoft's
 
 | Path | What |
 |---|---|
-| `src/backend/` | the backend DLL (`XINPUT1_3.dll`): the hook layer, 28 console commands, 9 cvars, cvar-unlock, and the resident fault-shield |
+| `src/backend/` | the backend DLL (`XINPUT1_3.dll`): the hook layer, 29 console commands, 10 cvars, cvar-unlock, and the resident fault-shield |
 | `src/ui/` | the frontend DLL (`snaphakui.dll`): the WebView2 **"SnapHak Studio"** window (`webview/` = the host + `mockup.html`) |
 | `src/common/` | the shared backend↔frontend interface ABI (`snaphak_iface.h`) |
 | `src/fault_shield/` | the recover-in-place vectored-exception fault shield (compiled into the backend) |
@@ -147,11 +147,16 @@ describing the change instead.
 | [`docs/capabilities.md`](docs/capabilities.md) | the full feature inventory — every console command, cvar, SnapStack op, and GUI tab |
 | [`docs/packaging.md`](docs/packaging.md) | the deployable bundle: the lean 2-file overlay |
 
-## Overrides (runtime, not shipped)
+## Overrides (runtime)
 
 At runtime the tool reads per-user **override decls** from `%USERPROFILE%\snaphak\overrides\` (a file-shadow
-over the engine's resource loader — e.g. to make extra editor entities placeable). **This repo ships none.**
-Drop your own decls there and the tool picks them up. Runtime logs go to `<DOOM>\snaphak_logs\`.
+over the engine's resource loader — e.g. to make extra editor entities placeable). Resolution is
+three-layer: **your file wins**, then the tool's few built-in default decls (the "*Custom" palette tab —
+served from memory, never written to your folder; delete your file at one of those names to get the
+default back), then the game's own packaged resource. A broken override set can be bisected by setting
+the `snaphak_user_overrides` cvar to 0 (ignores your files; built-ins still serve) or renaming the
+`overrides` folder. The backend log lists your active overrides at startup. Runtime logs go to
+`<DOOM>\snaphak_logs\`.
 
 ## License
 

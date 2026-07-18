@@ -1,5 +1,6 @@
-/* cvars.h -- register SnapHak's 9 cvars with the engine cvar system
- * (clean-room reimplementation of OG XINPUT1_3's static-init cvar push_back + spine flush).
+/* cvars.h -- register the cvar table with the engine cvar system: SnapHak's 9 cvars (clean-room
+ * reimplementation of OG XINPUT1_3's static-init cvar push_back + spine flush) + our own
+ * snaphak_user_overrides row (the user-override-layer kill switch; no OG counterpart).
  *
  * OG SnapHak declares 9 cvars as static descriptors (from our cvar-descriptor RE) and, in the install
  * spine FUN_1800229b1, flushes them through the engine cvar register fn:
@@ -18,7 +19,7 @@
 #ifndef BACKEND_B2_CVARS_H
 #define BACKEND_B2_CVARS_H
 
-/* Register all 9 cvars with the engine via the resolved CvarRegister fn (0 => not resolved; logs
+/* Register all table cvars with the engine via the resolved CvarRegister fn (0 => not resolved; logs
  * SKIPPED and returns 0), THEN link them into the engine's FULL findable cvar table so FindCvar (and the
  * S0-aliased gate-1 `~` console) recognizes them. ONE-SHOT-LATCHED: CvarRegister has NO dedup (it
  * unconditionally links into the pending list), and the findable-insert must run exactly once, so the
@@ -43,10 +44,12 @@
 int sh_cvars_install(void *cvar_register, const void *module_base);
 
 /* CVARS index constants (mirror the cvars.c CVARS[] table order) -- for consumers that read a
- * cvar's live value via sh_cvar_value_int. */
+ * cvar's live value via sh_cvar_value_int / sh_cvar_value_int_reg. Rows 0..8 are the 9 OG cvars;
+ * row 9 (snaphak_user_overrides) is our own addition (the user-override-layer kill switch). */
 #define B2_CVAR_SNAPHAK_PRETTY_ON                 6
 #define B2_CVAR_SNAPHAK_SHOW_RMCOUNT              7
 #define B2_CVAR_SNAPHAK_COPY_RESLIST_TO_CLIPBOARD 8
+#define B2_CVAR_SNAPHAK_USER_OVERRIDES            9
 
 /* Read the live INT/BOOL value of cvar `index` (one of the B2_CVAR_* constants) from OUR engine-
  * populated backing object. The engine stores valueInteger at idCVar+0x30 (DIRECT from the source-of-
@@ -55,5 +58,16 @@ int sh_cvars_install(void *cvar_register, const void *module_base);
  * NOTE (the build-specific-offset trap): +0x30 is DIRECT-from-source but the live read should be
  * spot-checked at FIRE (set the cvar to 1, confirm this returns 1). */
 int sh_cvar_value_int(int index, int def);
+
+/* Registration-aware variant: returns `def` until the engine has populated the backing object
+ * (name@+0x40 matches), then the live value. Use for a cvar consulted on the boot path BEFORE the
+ * cvar flush runs -- the plain read would report the zero-initialized slot (0) there, which is wrong
+ * for a default-1 cvar (the overrides loader's snaphak_user_overrides gate is the canonical case). */
+int sh_cvar_value_int_reg(int index, int def);
+
+/* Read-only access to the cvar TABLE rows (name/default/description) -- for sh_help's listing.
+ * Returns the row count; sh_cvar_table_row returns 1 and fills the pointers for a valid index. */
+int sh_cvar_table_count(void);
+int sh_cvar_table_row(int index, const char **name, const char **def, const char **desc);
 
 #endif /* BACKEND_B2_CVARS_H */

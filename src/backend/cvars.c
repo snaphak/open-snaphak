@@ -1,5 +1,5 @@
-/* cvars.c -- see cvars.h. The 9-cvar registrar (clone of OG XINPUT1_3's static-init cvar table +
- * spine flush FUN_1800229b1 / FUN_180022610).
+/* cvars.c -- see cvars.h. The cvar registrar: the 9 OG cvars (clone of OG XINPUT1_3's static-init
+ * cvar table + spine flush FUN_1800229b1 / FUN_180022610) + our own snaphak_user_overrides row.
  *
  * CVAR REGISTER ABI (DIRECT, from the cvar-register flush disasm @0x22610):
  *   ( CvarRegister )( self [embedded idCVar], name, default, typecode, desc, argComp )
@@ -66,8 +66,10 @@ typedef int (*name_hash_fn)(const char *name);
  * the registered name lives at g_cvar_objs[i][0x40]. We hash CVARS[i].name (identical bytes) directly. */
 #define IDCVAR_NAME_OFF           0x40
 
-/* The 9 cvars, VERBATIM from our cvar-descriptor RE (name / default / typecode 1=BOOL 2=INT
- * 4=FLOAT / description). Order matches the descriptor dump. */
+/* The cvar table: rows 0..8 are the 9 OG cvars, VERBATIM from our cvar-descriptor RE (name / default /
+ * typecode 1=BOOL 2=INT 4=FLOAT / description); order matches the descriptor dump. Row 9
+ * (snaphak_user_overrides) is OUR OWN addition (no OG counterpart) -- the user-override-layer kill
+ * switch the overrides loader reads (overrides.c). */
 typedef struct cvar_row {
     const char *name;
     const char *def;
@@ -85,6 +87,7 @@ static const cvar_row CVARS[] = {
     { "snaphak_pretty_on",                   "0",    1, "enables pretty printing of saved rawmap json" },
     { "snaphak_show_rmcount",                "0",    1, "draws the current number of rendermodels active" },
     { "snaphak_copy_reslist_to_clipboard",   "0",    1, "when sh_listres is used the contents will be copied to the clipboard" },
+    { "snaphak_user_overrides",              "1",    1, "when 0, override files in your snaphak profile folder are ignored (built-in defaults and the game's own resources serve instead); use to bisect a broken override set" },
 };
 #define CVAR_COUNT ((int)(sizeof(CVARS) / sizeof(CVARS[0])))
 
@@ -137,6 +140,37 @@ int sh_cvar_value_int(int index, int def)
 {
     if (index < 0 || index >= CVAR_COUNT) return def;
     __try {
+        return *(const volatile int32_t *)(&g_cvar_objs[index][IDCVAR_VALUE_INT_OFF]);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return def;
+    }
+}
+
+int sh_cvar_table_count(void)
+{
+    return CVAR_COUNT;
+}
+
+int sh_cvar_table_row(int index, const char **name, const char **def, const char **desc)
+{
+    if (index < 0 || index >= CVAR_COUNT) return 0;
+    if (name) *name = CVARS[index].name;
+    if (def)  *def  = CVARS[index].def;
+    if (desc) *desc = CVARS[index].desc;
+    return 1;
+}
+
+/* REGISTRATION-AWARE value read: like sh_cvar_value_int, but returns `def` until the engine has
+ * actually populated the backing object (name@+0x40 matches our row). The plain read returns the raw
+ * zero-initialized slot (0) before CvarRegister runs -- wrong for a default-1 cvar consulted on the
+ * boot path (the overrides loader installs BEFORE the cvar flush, and engine resource opens fire in
+ * between). This variant makes the pre-registration window read as the DEFAULT, not as 0. */
+int sh_cvar_value_int_reg(int index, int def)
+{
+    if (index < 0 || index >= CVAR_COUNT) return def;
+    __try {
+        const char *nm = *(const char * volatile *)(&g_cvar_objs[index][IDCVAR_NAME_OFF]);
+        if (nm == NULL || strcmp(nm, CVARS[index].name) != 0) return def;   /* not registered yet */
         return *(const volatile int32_t *)(&g_cvar_objs[index][IDCVAR_VALUE_INT_OFF]);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return def;
@@ -272,7 +306,7 @@ int sh_cvars_install(void *cvar_register, const void *module_base)
         ok += register_one(reg, i);
 
     _snprintf_s(line, sizeof line, _TRUNCATE,
-        "B2: cvars registered %d/%d (register=%p, non-EXPOSE / gate-1-invisible, faithful OG)",
+        "B2: cvars registered %d/%d (register=%p, non-EXPOSE / gate-1-invisible; 9 OG rows + snaphak_user_overrides)",
         ok, CVAR_COUNT, cvar_register);
     backend_log(line);
 

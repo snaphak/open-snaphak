@@ -31,6 +31,11 @@
  *   - Our returned stream is our OWN clean-room idFile subclass (its dtor frees with our allocator, so we
  *     need no engine allocator/free): the engine only ever touches it through the vtable methods (all
  *     ours) + the public Length/Name fields. Semantically equivalent to OG's stream.
+ *   - THREE-LAYER resolution (OG has two): user disk file -> our BUILT-IN default decls served FROM
+ *     MEMORY (overrides_baked.h; the "*Custom" tab set) -> the engine's packaged resource. Built-ins
+ *     are never written to the user's folder (they update with each release; deleting a user file =
+ *     reset to default). The user layer is toggleable via the snaphak_user_overrides cvar; install
+ *     runs a reclaim (deletes OUR untouched previously-written default copies) + an audit log pass.
  *
  * Clean-room: ported from our own RE (above). Zero OG SnapHak bytes.
  */

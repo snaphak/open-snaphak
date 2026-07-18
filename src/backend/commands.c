@@ -1269,12 +1269,14 @@ void h_target_any(idCmdArgs *a);
 /* ------------------------------------------------------------------------ the command table -------
  * VERBATIM from the OG XINPUT1_3.dll string table (read 2026-06-21). sh_target_any carries lightly
  * reworded help but the OG behavior (the editor-decl visibility toggle, target_any.c).
- * Order mirrors the [1]-[22] command numbering. */
+ * Order mirrors the [1]-[22] command numbering. sh_help (at the end) is OUR OWN addition. */
 typedef struct cmd_entry {
     const char *name;
     void       *handler;
     const char *help;
 } cmd_entry;
+
+static void h_sh_help(idCmdArgs *a);   /* defined after CMD_TABLE (it walks the table) */
 
 static const cmd_entry CMD_TABLE[] = {
     { "snapHak_rawmaps_on",  (void *)h_rawmaps_on,  "Switches from the normal doom snapmap format to raw JSON maps for saving and loading." },
@@ -1307,8 +1309,29 @@ static const cmd_entry CMD_TABLE[] = {
     { "noPlayerDeath",       (void *)h_noplayerdeath,  "Toggle no-death (the player cannot die) for the local player." },
     { "noPlayerKill",        (void *)h_noplayerkill,   "Toggle no-kill (the player cannot be killed) for the local player." },
     { "noTarget",            (void *)h_notarget,       "Toggle notarget (enemies ignore the local player)." },
+    /* OUR OWN addition (no OG counterpart): one place that lists the whole SnapHak console surface. */
+    { "sh_help",             (void *)h_sh_help,        "Lists every SnapHak console command and cvar with its description." },
 };
 #define CMD_COUNT ((int)(sizeof(CMD_TABLE) / sizeof(CMD_TABLE[0])))
+
+/* sh_help -- print the full SnapHak console surface: every CMD_TABLE command (name + help) and every
+ * cvar table row (name + default + description). The help strings are the same ones registered with
+ * the engine; this just puts them in ONE listing (the engine's own listCmds buries them among
+ * thousands of engine commands). */
+static void h_sh_help(idCmdArgs *a)
+{
+    (void)a;
+    sh_printf("SnapHak commands (%d):\n", CMD_COUNT);
+    for (int i = 0; i < CMD_COUNT; i++)
+        sh_printf("  %-28s %s\n", CMD_TABLE[i].name, CMD_TABLE[i].help);
+    int ncv = sh_cvar_table_count();
+    sh_printf("SnapHak cvars (%d):\n", ncv);
+    for (int i = 0; i < ncv; i++) {
+        const char *nm = NULL, *df = NULL, *ds = NULL;
+        if (sh_cvar_table_row(i, &nm, &df, &ds))
+            sh_printf("  %-28s (default %s) %s\n", nm, df, ds);
+    }
+}
 
 /* ====================================================================== command unlock ===========
  * Make EVERY console command usable once a developer command (e.g. `god`) flips developer mode on.

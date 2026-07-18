@@ -1,10 +1,24 @@
 /* overrides.c -- see overrides.h. The OVERRIDES FILE-SHADOW resource loader.
  *
  * Swaps the engine resource-provider's open-by-name vtable slot (+0xf8) with our override-open hook.
- * On each engine open, we first test for overrides/<name> under %USERPROFILE%\snaphak\; if the file
- * exists we return our own idFile-subclass stream (a FILE*-backed reimplementation of OG's
- * PTR_FUN_18003d050 stream), else we chain to the saved original engine open. A mode>=2 recursion
- * guard goes straight to the original (OG's `param_5 >= 2` branch).
+ * On each engine open the resolution is THREE-LAYER:
+ *   1. USER    -- overrides/<name> under %USERPROFILE%\snaphak\ on disk (an explicit user act; wins).
+ *   2. BUILT-IN -- our baked default decls (overrides_baked.h), served FROM MEMORY. Nothing is ever
+ *                  written to the user's folder, so defaults update with every release and "reset to
+ *                  default" is simply deleting the user's file.
+ *   3. ENGINE  -- chain to the saved original engine open (the packaged resource).
+ * A mode>=2 recursion guard goes straight to the original (OG's `param_5 >= 2` branch). For a BUILT-IN
+ * name only, a user file that fails a minimal well-formedness check (brace/quote balance) is refused and
+ * the built-in default serves instead (logged) -- a garbled file there would take out the "*Custom" tab.
+ * The user layer can be disabled for bisecting a broken override set via the snaphak_user_overrides
+ * cvar (or by renaming the overrides folder, which also covers opens before the cvar applies).
+ *
+ * Install-time passes (both logged, both SEH-guarded):
+ *   - RECLAIM: earlier releases WROTE the baked defaults to the user's folder if absent. A user file
+ *     byte-equal to a baked default (CR bytes ignored) is provably ours-untouched -> deleted, so the
+ *     memory layer serves current defaults. A differing file is user-owned -> kept, shadowing.
+ *   - AUDIT: enumerate the active user override files into the log, so "what is shadowing what" is
+ *     always answerable from the log alone.
  *
  * Clean-room: ported from our own RE (overrides.h header).
  * Zero OG SnapHak bytes. Every disk/engine touch is SEH-guarded -- a shadow failure degrades to a
@@ -19,7 +33,8 @@
 #pragma comment(lib, "shell32.lib")   /* SHGetFolderPathA */
 #include "overrides.h"
 #include "backend_log.h"
-#include "overrides_seed_baked.h"   /* the built-in "*Custom"-tab default decls (Timeline + Unknown) */
+#include "cvars.h"                  /* sh_cvar_value_int_reg + B2_CVAR_SNAPHAK_USER_OVERRIDES */
+#include "overrides_baked.h"        /* the built-in "*Custom"-tab default decls (Timeline + Unknown) */
 
 /* The engine open-by-name vtable method offset within the resource-provider vtable.
  * DIRECT: OG patches engineBase+0x2798598; the vtable is engineBase+0x27984a0 -> slot offset = 0xf8. */
@@ -38,19 +53,27 @@ static volatile LONG g_shadow_count = 0;
 static char g_root[MAX_PATH] = {0};
 
 /* ============================================================ our idFile-subclass stream ===========
- * A FILE*-backed reimplementation of OG's PTR_FUN_18003d050 stream (the engine idFile interface, 24
- * virtual methods -- every slot decompiled in pb1-overrides). The object layout mirrors OG's:
+ * A reimplementation of OG's PTR_FUN_18003d050 stream (the engine idFile interface, 24 virtual
+ * methods -- every slot decompiled in pb1-overrides). The object layout keeps OG's public head:
  *   +0x00 vtable   +0x08 FILE*   +0x10 name   +0x18 length   +0x20 short flag   +0x21 byte flag
  * The engine reads the resource through this vtable; the dtor (slot 0) frees the object with OUR
  * allocator (HeapFree) -- so we need no engine allocator/free (OG used the engine's only so the engine
- * could free it; here every method incl. the dtor is ours). */
+ * could free it; here every method incl. the dtor is ours).
+ *
+ * TWO BACKINGS, one vtable: fp != NULL -> FILE*-backed (a user override file, OG-equivalent);
+ * fp == NULL && buf != NULL -> MEMORY-backed (a built-in default, or a validated user file already read
+ * whole). The memory form is read-only (Write/printf return 0) and tracks its own cursor in `pos`;
+ * owns_buf says the dtor must HeapFree the buffer (a heap copy) vs leave it (the static baked text). */
 typedef struct ov_stream {
     void        *vtable;     /* +0x00 */
-    FILE        *fp;         /* +0x08 */
+    FILE        *fp;         /* +0x08 (NULL for a memory-backed stream) */
     const char  *name;       /* +0x10 (points at the heap-dup'd name appended after the struct) */
     long long    length;     /* +0x18 */
     short        flag16;     /* +0x20 (OG sets 1) */
     char         flag8;      /* +0x22-ish via +0x21 read in slot 20; OG returns *(this+0x21) */
+    const unsigned char *buf;/* memory backing (baked static text, or an owned heap copy) */
+    long long    pos;        /* memory-backing read cursor */
+    int          owns_buf;   /* 1 -> dtor HeapFrees buf */
 } ov_stream;
 
 /* --- the 24 vtable methods, faithful to the OG slot semantics (every slot decompiled) --------------
@@ -59,7 +82,9 @@ typedef struct ov_stream {
 static void  ov_dtor(ov_stream *s)                                   /* [0] close + free(this) */
 {
     if (s) {
-        if (s->fp) { fclose(s->fp); s->fp = NULL; s->length = 0; s->name = NULL; s->flag16 = 0; }
+        if (s->fp) { fclose(s->fp); s->fp = NULL; }
+        if (s->buf && s->owns_buf) HeapFree(GetProcessHeap(), 0, (void *)s->buf);
+        s->buf = NULL; s->length = 0; s->name = NULL; s->flag16 = 0;
         HeapFree(GetProcessHeap(), 0, s);
     }
 }
@@ -69,10 +94,19 @@ static long long ov_length(ov_stream *s)        { return s ? s->length : 0; }   
 static const char *ov_name(ov_stream *s)        { return s ? s->name : NULL; }           /* [4] *(this+0x10) */
 static long long ov_read(ov_stream *s, void *buf, unsigned int n)    /* [5] fread(buf,1,n,fp) */
 {
-    if (!s || !s->fp || !buf) return 0;
-    return (long long)fread(buf, 1, n, s->fp);
+    if (!s || !buf) return 0;
+    if (s->fp) return (long long)fread(buf, 1, n, s->fp);
+    if (s->buf) {                                        /* memory backing: bounded copy + cursor */
+        long long avail = s->length - s->pos;
+        long long take  = (avail < (long long)n) ? avail : (long long)n;
+        if (take <= 0) return 0;
+        memcpy(buf, s->buf + s->pos, (size_t)take);
+        s->pos += take;
+        return take;
+    }
+    return 0;
 }
-static long long ov_write(ov_stream *s, const void *buf, unsigned int n)  /* [6] fwrite(buf,1,n,fp) */
+static long long ov_write(ov_stream *s, const void *buf, unsigned int n)  /* [6] fwrite(buf,1,n,fp); memory form is read-only */
 {
     if (!s || !s->fp || !buf) return 0;
     return (long long)fwrite(buf, 1, n, s->fp);
@@ -98,7 +132,8 @@ static int       ov_lock(ov_stream *s)          { if (s && s->fp) _lock_file(s->
 static int       ov_unlock(ov_stream *s)        { if (s && s->fp) _unlock_file(s->fp); return 1; }   /* [10] */
 static long long ov_length_byseek(ov_stream *s)                      /* [11] tell/seek-end/tell/restore */
 {
-    if (!s || !s->fp) return 0;
+    if (!s) return 0;
+    if (!s->fp) return s->buf ? s->length : 0;           /* memory backing: length is already known */
     long long pos = _ftelli64(s->fp);
     _fseeki64(s->fp, 0, SEEK_END);
     long long len = _ftelli64(s->fp);
@@ -106,10 +141,26 @@ static long long ov_length_byseek(ov_stream *s)                      /* [11] tel
     return len;
 }
 static void      ov_noop(ov_stream *s)          { (void)s; }                                          /* [12] RET 0 */
-static long long ov_tell(ov_stream *s)          { return (s && s->fp) ? _ftelli64(s->fp) : 0; }       /* [13] ftell */
+static long long ov_tell(ov_stream *s)                                                                /* [13] ftell */
+{
+    if (!s) return 0;
+    if (s->fp) return _ftelli64(s->fp);
+    return s->buf ? s->pos : 0;
+}
 static int       ov_seek(ov_stream *s, long long off, int origin)    /* [14] fseek; OG maps 0->SET,1->END(2),else CUR */
 {
-    if (!s || !s->fp) return -1;
+    if (!s) return -1;
+    if (!s->fp) {                                        /* memory backing: move the cursor, clamped */
+        if (!s->buf) return -1;
+        long long p;
+        if (origin == 0)      p = off;                   /* SET */
+        else if (origin == 1) p = s->length + off;       /* END */
+        else                  p = s->pos + off;          /* CUR */
+        if (p < 0) p = 0;
+        if (p > s->length) p = s->length;
+        s->pos = p;
+        return 0;
+    }
     int o = SEEK_CUR;
     if (origin == 0) o = SEEK_SET;
     else if (origin == 1) o = SEEK_END;
@@ -186,6 +237,18 @@ static ov_stream *make_stream(FILE *fp, long long length, const char *name)
     s->length = length;
     s->flag16 = 1;   /* OG sets the +0x20 short to 1 */
     s->flag8  = 0;
+    return s;
+}
+
+/* Construct a MEMORY-backed stream over `buf`/`length`. owns_buf=1 hands the (heap) buffer to the
+ * stream's dtor; owns_buf=0 leaves it (the static baked text). NULL on alloc failure. */
+static ov_stream *make_mem_stream(const unsigned char *buf, long long length, const char *name, int owns_buf)
+{
+    ov_stream *s = make_stream(NULL, length, name);
+    if (!s) return NULL;
+    s->buf      = buf;
+    s->pos      = 0;
+    s->owns_buf = owns_buf;
     return s;
 }
 
@@ -286,27 +349,141 @@ static ov_stream *try_open_override(const char *name)
     return s;
 }
 
+/* ====================================================== built-in default lookup + validation =======*/
+
+/* Path-tolerant name compare for the baked table: case-insensitive, '/' == '\\' (the engine asks with
+ * forward slashes; be robust to either). */
+static int ov_name_eq(const char *a, const char *b)
+{
+    if (!a || !b) return 0;
+    for (;; a++, b++) {
+        char ca = *a, cb = *b;
+        if (ca == '\\') ca = '/';
+        if (cb == '\\') cb = '/';
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+        if (ca != cb) return 0;
+        if (ca == '\0') return 1;
+    }
+}
+
+/* The baked default for `name`, or NULL if `name` is not a built-in. */
+static const ov_baked_decl_t *find_baked(const char *name)
+{
+    if (!name) return NULL;
+    for (size_t i = 0; i < sizeof g_ov_baked_decls / sizeof g_ov_baked_decls[0]; i++)
+        if (ov_name_eq(name, g_ov_baked_decls[i].name)) return &g_ov_baked_decls[i];
+    return NULL;
+}
+
+/* Minimal decl well-formedness: has content; braces balance (never negative, ends at 0) and quotes
+ * pair up, counted OUTSIDE quotes and outside // and block comments (the decl grammar allows both).
+ * This is a truncation/mangling tripwire, NOT a semantic validator -- a structurally sound decl with
+ * bad values still serves (the user's folder is the user's). */
+static int decl_well_formed(const unsigned char *buf, size_t len)
+{
+    long depth = 0;
+    int  in_quote = 0, in_line_comment = 0, in_block_comment = 0, seen_brace = 0;
+    for (size_t i = 0; i < len; i++) {
+        char c = (char)buf[i];
+        if (in_line_comment)  { if (c == '\n') in_line_comment = 0;                       continue; }
+        if (in_block_comment) { if (c == '*' && i + 1 < len && buf[i+1] == '/') { in_block_comment = 0; i++; } continue; }
+        if (in_quote)         { if (c == '"' || c == '\n') in_quote = 0;                  continue; }
+        if (c == '"')  { in_quote = 1; continue; }
+        if (c == '/' && i + 1 < len && buf[i+1] == '/') { in_line_comment = 1;  i++; continue; }
+        if (c == '/' && i + 1 < len && buf[i+1] == '*') { in_block_comment = 1; i++; continue; }
+        if (c == '{') { depth++; seen_brace = 1; }
+        else if (c == '}') { if (--depth < 0) return 0; }
+    }
+    return seen_brace && depth == 0 && !in_quote;
+}
+
+/* Read a whole file into a heap buffer (cap 8 MiB -- decls are KB-scale; a bigger file is served
+ * unvalidated as a plain stream rather than slurped). NULL on absent/oversize/failure. */
+#define OV_SLURP_CAP (8u * 1024u * 1024u)
+static unsigned char *read_all_file(const char *path, long long *out_len)
+{
+    FILE *fp = NULL;
+    if (fopen_s(&fp, path, "rb") != 0 || fp == NULL) return NULL;
+    long long len = 0;
+    if (_fseeki64(fp, 0, SEEK_END) == 0) { len = _ftelli64(fp); _fseeki64(fp, 0, SEEK_SET); }
+    if (len < 0 || len > (long long)OV_SLURP_CAP) { fclose(fp); return NULL; }
+    unsigned char *buf = (unsigned char *)HeapAlloc(GetProcessHeap(), 0, (size_t)len + 1);
+    if (!buf) { fclose(fp); return NULL; }
+    size_t got = fread(buf, 1, (size_t)len, fp);
+    fclose(fp);
+    if ((long long)got != len) { HeapFree(GetProcessHeap(), 0, buf); return NULL; }
+    buf[len] = 0;
+    *out_len = len;
+    return buf;
+}
+
+/* USER layer open for a BUILT-IN name: slurp + validate the user's file. Well-formed -> a memory
+ * stream over the heap copy (stream owns it). Malformed -> refuse (log) and let the caller serve the
+ * built-in default -- a garbled file at one of these names would take out the "*Custom" tab. A file
+ * the slurp can't handle (oversize/alloc) is served unvalidated as a plain stream (benefit of doubt). */
+static ov_stream *open_user_for_baked_name(const char *name, int *malformed)
+{
+    *malformed = 0;
+    char path[MAX_PATH];
+    if (!build_override_path(name, path, sizeof path)) return NULL;
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) return NULL;
+
+    long long len = 0;
+    unsigned char *buf = read_all_file(path, &len);
+    if (!buf) return try_open_override(name);            /* unusual size/alloc -> plain file stream */
+
+    if (!decl_well_formed(buf, (size_t)len)) {
+        HeapFree(GetProcessHeap(), 0, buf);
+        *malformed = 1;
+        return NULL;
+    }
+    ov_stream *s = make_mem_stream(buf, len, name, 1);
+    if (!s) { HeapFree(GetProcessHeap(), 0, buf); return NULL; }
+    return s;
+}
+
 /* The override-open hook -- our value in the engine's open vtable slot. Same ABI as the engine method.
- * mode>=2 (OG param_5>=2) is a recursion/no-shadow guard -> straight to the original. Otherwise try the
- * override file; serve our stream if present, else chain to the saved engine original. SEH-guarded so a
- * shadow path fault degrades to a vanilla open. */
+ * mode>=2 (OG param_5>=2) is a recursion/no-shadow guard -> straight to the original. Otherwise resolve
+ * three-layer: USER disk file -> BUILT-IN baked default (from memory) -> chain to the engine original.
+ * The user layer is gated by the snaphak_user_overrides cvar (default 1; reads as 1 until the cvar is
+ * registered, so early-boot opens behave normally). SEH-guarded so a shadow path fault degrades to a
+ * vanilla open. */
 static void *ov_open_hook(void *self, const char *name, unsigned char b1, unsigned char b2, unsigned int mode)
 {
     if (g_orig_open == NULL) return NULL;   /* defensive: never happens once installed */
 
     if (mode < 2 && name != NULL) {
         ov_stream *s = NULL;
+        const char *src = NULL;
         __try {
-            s = try_open_override(name);
+            const ov_baked_decl_t *baked = find_baked(name);
+            int user_on = sh_cvar_value_int_reg(B2_CVAR_SNAPHAK_USER_OVERRIDES, 1);
+            if (user_on) {
+                if (baked) {
+                    int malformed = 0;
+                    s = open_user_for_baked_name(name, &malformed);
+                    if (s) src = "user";
+                    else if (malformed) src = "built-in (user file malformed, refused)";
+                } else {
+                    s = try_open_override(name);
+                    if (s) src = "user";
+                }
+            }
+            if (s == NULL && baked != NULL) {
+                s = make_mem_stream((const unsigned char *)baked->text, (long long)baked->len, name, 0);
+                if (s && src == NULL) src = user_on ? "built-in" : "built-in (user layer off)";
+            }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             s = NULL;   /* any fault in the shadow path -> fall through to the original open */
         }
         if (s != NULL) {
             unsigned long n = (unsigned long)InterlockedIncrement(&g_shadow_count);
-            char line[MAX_PATH + 96];
+            char line[MAX_PATH + 160];
             _snprintf_s(line, sizeof line, _TRUNCATE,
-                        "B1: overrides file-shadow FIRED for '%s' (%lld bytes) [#%lu]",
-                        name, s->length, n);
+                        "B1: overrides file-shadow FIRED [%s] for '%s' (%lld bytes) [#%lu]",
+                        src ? src : "?", name, s->length, n);
             backend_log(line);
             return s;   /* the engine reads the override bytes through our idFile vtable */
         }
@@ -344,34 +521,110 @@ static void *decode_vtable_global(const uint8_t *ctor_fn)
     return NULL;
 }
 
-/* ====================================================== built-in default-decl self-seed =============
- * Ship the clone's "*Custom" palette-tab default set (the Timeline + Unknown editor-entity/entityDef
- * overrides, g_ov_seed_decls) built-in: on install, write each to <root>\overrides\<name> IF ABSENT, so a
- * clean setup gets the tab + entities with no external files. WRITE-IF-ABSENT -> a user's own file at the
- * same path is never clobbered, and the open-shadow above then serves whichever is on disk. Runs before the
- * engine's decl preload (the hook is installed first), so a freshly-seeded decl is picked up this boot.
- * SEH-guarded; a seed failure just degrades to "no built-in default for that name", never a crash. */
-static void seed_baked_overrides(void)
+/* ====================================================== install-time reclaim + audit ===============
+ * RECLAIM: earlier releases wrote the built-in defaults to <root>\overrides\<name> if absent. Such a
+ * file, byte-equal to the baked text with CR bytes ignored (some copies picked up CRLF endings), is
+ * provably OURS-untouched -> delete it, so the in-memory built-in layer (which updates with every
+ * release) serves instead. ANY difference -> the file is user-owned -> kept, and it keeps winning.
+ * SEH-guarded; a reclaim failure just leaves the file shadowing (the old behavior). */
+static int file_equals_baked_ignoring_cr(const unsigned char *fbuf, size_t flen,
+                                         const char *baked, size_t blen)
 {
-    for (size_t i = 0; i < sizeof g_ov_seed_decls / sizeof g_ov_seed_decls[0]; i++) {
-        char path[MAX_PATH];
-        if (!build_override_path(g_ov_seed_decls[i].name, path, sizeof path)) continue;
-        if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) continue;   /* present -> keep the user's */
+    size_t fi = 0, bi = 0;
+    while (fi < flen && (char)fbuf[fi] == '\r') fi++;    /* the baked text is LF-only */
+    while (fi < flen && bi < blen) {
+        if ((char)fbuf[fi] == '\r') { fi++; continue; }
+        if ((char)fbuf[fi] != baked[bi]) return 0;
+        fi++; bi++;
+        while (fi < flen && (char)fbuf[fi] == '\r') fi++;
+    }
+    return fi == flen && bi == blen;
+}
+
+static void reclaim_baked_overrides(void)
+{
+    for (size_t i = 0; i < sizeof g_ov_baked_decls / sizeof g_ov_baked_decls[0]; i++) {
         __try {
-            char dir[MAX_PATH];
-            strncpy_s(dir, sizeof dir, path, _TRUNCATE);
-            char *slash = strrchr(dir, '\\');
-            if (slash) { *slash = '\0'; SHCreateDirectoryExA(NULL, dir, NULL); }
-            FILE *fp = NULL;
-            if (fopen_s(&fp, path, "wb") == 0 && fp) {
-                fwrite(g_ov_seed_decls[i].text, 1, g_ov_seed_decls[i].len, fp);
-                fclose(fp);
-                char msg[MAX_PATH + 64];
-                _snprintf_s(msg, sizeof msg, _TRUNCATE, "B1: seeded built-in override '%s'", g_ov_seed_decls[i].name);
+            char path[MAX_PATH];
+            if (!build_override_path(g_ov_baked_decls[i].name, path, sizeof path)) continue;
+            if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) continue;   /* nothing on disk */
+            long long len = 0;
+            unsigned char *buf = read_all_file(path, &len);
+            if (!buf) continue;
+            int ours = file_equals_baked_ignoring_cr(buf, (size_t)len,
+                                                     g_ov_baked_decls[i].text, g_ov_baked_decls[i].len);
+            HeapFree(GetProcessHeap(), 0, buf);
+            char msg[MAX_PATH + 96];
+            if (ours && DeleteFileA(path)) {
+                _snprintf_s(msg, sizeof msg, _TRUNCATE,
+                            "B1: reclaimed previously-written default '%s' (built-in serves from memory now)",
+                            g_ov_baked_decls[i].name);
+                backend_log(msg);
+            } else if (!ours) {
+                _snprintf_s(msg, sizeof msg, _TRUNCATE,
+                            "B1: user-owned override kept at built-in name '%s' (it wins over the built-in)",
+                            g_ov_baked_decls[i].name);
                 backend_log(msg);
             }
-        } __except (EXCEPTION_EXECUTE_HANDLER) { /* skip this one */ }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { /* leave the file; old behavior */ }
     }
+}
+
+/* AUDIT: enumerate the user's active override files into the log (count + names, bounded), flagging any
+ * that fail the well-formedness tripwire -- so "what is shadowing what" is answerable from the log. */
+#define OV_AUDIT_MAX_FILES 512
+#define OV_AUDIT_MAX_NAMED 24
+#define OV_AUDIT_MAX_DEPTH 8
+static void audit_walk(const char *dir, const char *rel, int depth, int *count, int *named, int *warned)
+{
+    if (depth > OV_AUDIT_MAX_DEPTH || *count >= OV_AUDIT_MAX_FILES) return;
+    char pattern[MAX_PATH];
+    _snprintf_s(pattern, sizeof pattern, _TRUNCATE, "%s\\*", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+        char sub[MAX_PATH], subrel[MAX_PATH];
+        _snprintf_s(sub,    sizeof sub,    _TRUNCATE, "%s\\%s", dir, fd.cFileName);
+        _snprintf_s(subrel, sizeof subrel, _TRUNCATE, "%s%s%s", rel, rel[0] ? "/" : "", fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            audit_walk(sub, subrel, depth + 1, count, named, warned);
+        } else {
+            (*count)++;
+            int bad = 0;
+            long long len = 0;
+            unsigned char *buf = read_all_file(sub, &len);
+            if (buf) { bad = !decl_well_formed(buf, (size_t)len); HeapFree(GetProcessHeap(), 0, buf); }
+            if (bad) (*warned)++;
+            if (*named < OV_AUDIT_MAX_NAMED || bad) {
+                char msg[MAX_PATH + 96];
+                _snprintf_s(msg, sizeof msg, _TRUNCATE, "B1:   override %s'%s'",
+                            bad ? "STRUCTURALLY-SUSPECT (unbalanced braces/quotes) " : "", subrel);
+                backend_log(msg);
+                (*named)++;
+            }
+        }
+        if (*count >= OV_AUDIT_MAX_FILES) break;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static void audit_user_overrides(void)
+{
+    __try {
+        char root[MAX_PATH], dir[MAX_PATH];
+        resolve_root(root, sizeof root);
+        _snprintf_s(dir, sizeof dir, _TRUNCATE, "%s\\overrides", root);
+        int count = 0, named = 0, warned = 0;
+        audit_walk(dir, "", 0, &count, &named, &warned);
+        char msg[MAX_PATH + 128];
+        _snprintf_s(msg, sizeof msg, _TRUNCATE,
+                    "B1: overrides audit -- %d user override file(s) active under %s%s%s "
+                    "(disable the user layer with snaphak_user_overrides 0 to bisect)",
+                    count, dir, warned ? ", " : "", warned ? "with structural warnings above" : "");
+        backend_log(msg);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { backend_log("B1: overrides audit skipped (fault)"); }
 }
 
 /* ============================================================ the install (slot swap) ==============*/
@@ -425,10 +678,13 @@ int sh_overrides_install(void *ctor_fn, int ctor_status_ok)
     g_slot = slot;
 
     if (!g_root[0]) default_root(g_root, sizeof g_root);
-    seed_baked_overrides();   /* materialize the built-in "*Custom"-tab default decls if absent (Timeline + Unknown) */
+    reclaim_baked_overrides();   /* delete OUR untouched previously-written defaults (memory layer serves now) */
+    audit_user_overrides();      /* log what the user's folder actively shadows */
     _snprintf_s(line, sizeof line, _TRUNCATE,
-        "B1: overrides file-shadow installed (vtable=%p slot+0x%x=%p, orig open=%p); root=%s\\overrides",
-        vtable, OPEN_SLOT_OFFSET, (void *)slot, orig, g_root);
+        "B1: overrides file-shadow installed (vtable=%p slot+0x%x=%p, orig open=%p); root=%s\\overrides; "
+        "built-in defaults: %u from memory",
+        vtable, OPEN_SLOT_OFFSET, (void *)slot, orig, g_root,
+        (unsigned)(sizeof g_ov_baked_decls / sizeof g_ov_baked_decls[0]));
     backend_log(line);
     return 1;
 }

@@ -26,6 +26,7 @@ Registered with the engine command system; run from the DOOM console.
 | `sh_genmd6model` | Compile a `.md6model` into a `bmd6model`. |
 | `sh_debugrender` | Renderer debug toggle (developer tool). |
 | `sh_alginfo` | Report the math-acceleration status. |
+| `sh_help` | List every SnapHak console command and cvar with its description in one place. |
 | `sh_superscriptop` | Dump SuperScript / eventDef data (e.g. emit the eventDef table as a header). |
 | `cs_dumpeventdefs` | Dump all eventDefs to a file. |
 | `cs_fieldinfo` | Print field info for a type (developer tool). |
@@ -44,6 +45,7 @@ Console variables; defaults shown in parentheses.
 | `snaphak_copy_reslist_to_clipboard` (0) | Copy `sh_listres` output to the clipboard. |
 | `snaphak_pretty_on` (0) | Pretty-print saved rawmap JSON. |
 | `snaphak_show_rmcount` (0) | Draw the current number of active rendermodels. |
+| `snaphak_user_overrides` (1) | When 0, your override files under `%USERPROFILE%\snaphak\overrides\` are ignored (built-in defaults and the game's own resources serve instead) — the bisect lever for a broken override set. Affects resources opened after the change; for boot-time coverage, rename the `overrides` folder instead. |
 | `cs_dash_direction_multiplier` (1.0) | Scale dash direction. |
 | `cs_dash_ground_velocity_multiplier` (2.0) | Scale dash direction when on the ground. |
 | `cs_dash_time_seconds` (0.5) | Time period over which the dash is applied. |
@@ -117,8 +119,8 @@ Engine detours and resource-loader shadows the backend installs.
 |---|---|
 | Rawmap load | When rawmaps are on, load the map from `%USERPROFILE%\snaphak\rawmap.json` instead of the engine's own save. |
 | Rawmap save | On every editor save, mirror the serialized map JSON to `%USERPROFILE%\snaphak\rawmap.json`. |
-| Overrides file-shadow | Serve same-named resource files from `%USERPROFILE%\snaphak\overrides\` when present (the overrides loader). |
-| Strids injector | Inject custom `#str_` strings from `overrides\strings\strids.json` into the engine string table. |
+| Overrides file-shadow | Three-layer resource resolution: your file under `%USERPROFILE%\snaphak\overrides\` wins, then the built-in default decls (served from memory — the "*Custom" tab set; never written to your folder, so they update with each release and deleting your file restores the default), then the game's packaged resource. Install logs an audit of your active overrides and reclaims untouched default copies written by earlier releases. |
+| Strids injector | Inject custom `#str_` strings from `%USERPROFILE%\snaphak\strings\strids.json` into the engine string table (your key wins over a built-in default for the same id). |
 | Fault handling | The clone replaces the original's two kill-detours (which terminate DOOM) with the recover-in-place fault-shield (see [`fidelity.md`](fidelity.md)). |
 | SuperScript table | Merge the parked `cs_*` SuperScript objects into the engine's eventDef enumerate/lookup/dispatch paths. |
 | Math acceleration | An optional SIMD/threading accelerator for engine math; not required for parity (a perf feature, not a user-facing one). |
