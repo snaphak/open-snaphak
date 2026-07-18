@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -38,38 +39,23 @@ Options:
 
 With no --local, install/update download from GitHub. Uninstall restores any files it
 replaced and leaves your %USERPROFILE%\snaphak data untouched.
+
+Running snaphak with no arguments (a double-click) opens an interactive prompt: it offers
+to install (or to update when a newer version is out), and takes any command above.
 `)
 }
 
 func main() {
 	cleanupSelfUpdateLeftovers() // remove any snaphak.exe.old a prior self-update left behind
 	if len(os.Args) < 2 {
-		// no args = a double-click -> the friendly interactive install (auto-detect, confirm, pause)
-		interactiveInstall()
+		// no args = a double-click -> the status-aware interactive prompt (install / update notice /
+		// full command loop), so every command works without a terminal or PATH.
+		interactiveMain()
 		return
 	}
 	cmd := os.Args[1]
-	f := parseFlags(os.Args[2:])
-
-	var err error
-	switch cmd {
-	case "install":
-		err = cmdInstall(f)
-	case "update":
-		err = cmdUpdate(f)
-	case "uninstall":
-		err = cmdUninstall(f)
-	case "status":
-		err = cmdStatus(f)
-	case "changelog", "info", "--info":
-		err = cmdChangelog(f)
-	case "set-token":
-		err = cmdSetToken(os.Args[2:])
-	case "version", "--version", "-v":
-		cmdVersion()
-	case "help", "-h", "--help":
-		usage()
-	default:
+	err := runCommand(cmd, os.Args[2:])
+	if errors.Is(err, errUnknownCommand) {
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		usage()
 		os.Exit(2)
@@ -78,6 +64,36 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// errUnknownCommand distinguishes "no such command" from a command that ran and failed.
+var errUnknownCommand = errors.New("unknown command")
+
+// runCommand dispatches one command; shared by the CLI entry point and the interactive prompt so both
+// surfaces stay identical.
+func runCommand(cmd string, args []string) error {
+	f := parseFlags(args)
+	switch cmd {
+	case "install":
+		return cmdInstall(f)
+	case "update":
+		return cmdUpdate(f)
+	case "uninstall":
+		return cmdUninstall(f)
+	case "status":
+		return cmdStatus(f)
+	case "changelog", "info", "--info":
+		return cmdChangelog(f)
+	case "set-token":
+		return cmdSetToken(args)
+	case "version", "--version", "-v":
+		cmdVersion()
+		return nil
+	case "help", "-h", "--help":
+		usage()
+		return nil
+	}
+	return errUnknownCommand
 }
 
 // flags holds the parsed command-line options.
