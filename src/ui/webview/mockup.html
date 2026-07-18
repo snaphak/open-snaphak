@@ -3619,14 +3619,6 @@
           attachLogs: document.getElementById('crAttach').checked ? 1 : 0,
           website: document.getElementById('crWebsite').value || ''});   // honeypot -- must stay empty
   });
-  // browser-preview demo hook: window.previewCrash() injects a fake crash record end-to-end.
-  if (PREVIEW) window.previewCrash = function(){
-    onMessage({kind:'crashPending', count:2, record:{
-      kind:'classB', code:'0xc0000005', rip_rva:'0x5e0b12', fault_addr:'0x3f00000060',
-      module:'DOOMx64vk.exe', stack:'DOOM+0x5e0b12\n    DOOM+0x5e6410\n    DOOM+0x523140',
-      engineText:'', dump:'', version:'0.2.0-beta.3', time:'2026-07-18 12:00:00'}});
-  };
-
   var pcCreateBtn = document.getElementById('prefabCreateBtn');
   if (pcCreateBtn) pcCreateBtn.addEventListener('click', function(){
     if (npSelInfo) npSelInfo.textContent = 'From ' + editorSelCount + ' selected ' + (editorSelCount === 1 ? 'entity' : 'entities');
