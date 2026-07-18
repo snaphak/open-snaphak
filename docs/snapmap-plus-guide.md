@@ -1,3 +1,8 @@
+---
+layout: guide
+title: Guide to Snapmap+
+---
+
 # Guide to Snapmap+
 
 ## Table of Contents
@@ -40,7 +45,7 @@ publish. That means maps built with Snapmap+ work for everyone who plays them, c
 nothing needs to be installed on the player's end, and every asset referenced already ships with the base
 game.
 
-![Snapmap+ full window: Entities tab open, DOOM editor visible behind it](images/snapmap-window-and-doom.png)
+![Snapmap+ full window: Entities tab open, DOOM editor visible behind it](images/snapmap-window-and-doom.jpg)
 
 ---
 
@@ -71,14 +76,29 @@ verify, then redo the depot-download steps above when you want to go back to edi
 
 ### Install Snapmap+ itself
 
-> **[SCREENSHOT — the installer running / its success message]**
+Download **`snaphak.exe`** from the [Snapmap+ site](./) (or from the project's GitHub Releases page)
+and **double-click it**. It finds your DOOM 2016 install automatically by looking through your Steam
+libraries, asks you to confirm, and places the overlay. That's the whole install. (`snaphak.exe` is the
+short name Snapmap+'s tooling goes by — SnapHak — which you'll also see in its console commands and
+folder names.)
 
-Run the Snapmap+ installer and point it at your DOOM folder. It places two files:
+A few practical notes:
 
-- `XINPUT1_3.dll` in the DOOM folder itself
-- `snaphakui.dll` inside a `snaphak\` subfolder
+- **Close DOOM first.** A running game locks the files — the installer detects this and asks you to
+  close it rather than failing cryptically.
+- If auto-detection can't find DOOM (a non-Steam copy, say), run it from a terminal instead and point
+  it at the folder: `snaphak install --doom "C:\path\to\DOOM"`.
+- While Snapmap+ is in **beta**, the double-click flow may report that no release is available — run
+  `snaphak install --beta` from a terminal instead. This note disappears with the first stable release.
+- **Updating later:** run `snaphak update` — it updates both the overlay and `snaphak.exe` itself.
+  You never need to re-download anything from the site.
+- **Uninstalling:** `snaphak uninstall` restores your DOOM folder to exactly what it was before.
+  Your own Snapmap+ data (prefabs, rawmaps, overrides under `%USERPROFILE%\snaphak`) is left untouched.
+- `snaphak help` in a terminal lists everything else: `status`, `changelog`, `version`.
 
-Uninstalling later is just removing those two.
+What actually lands in your DOOM folder is small: `XINPUT1_3.dll` in the folder itself, and
+`snaphakui.dll` inside a `snaphak\` subfolder. Everything is hash-verified before a single file is
+touched, and the installer keeps a record so uninstall reverses exactly what it placed.
 
 ---
 
@@ -309,7 +329,7 @@ compatible with any classname — no mismatch risk, regardless of what type you'
 Rather than making you build one of these by hand every time, Snapmap+ seeds two ready-to-place starting
 points — **Unknown** and **Timeline** — directly into DOOM's own Create menu, under a **"*Custom"** tab.
 
-![DOOM's Create menu with the *Custom tab open, placing a Timeline entity](images/custom-palette-tab.png)
+![DOOM's Create menu with the *Custom tab open, placing a Timeline entity](images/custom-palette-tab.jpg)
 
 Drop either one in like any other object, then reclass it from there (see
 [Reclassing an Entity](#reclassing-an-entity)) if you want a specific engine type rather than a bare
@@ -357,7 +377,7 @@ native wire tool — so you can drag a wire from a logic node straight to one, t
 ordinary SnapMap logic nodes together, instead of typing an ID into a `targets` list by hand. Run
 `sh_target_any` again to turn it back off and return to normal SnapMap logic wiring.
 
-![sh_target_any active: the wire from 'On Map Started' to the Timeline entity turns green while revealed](images/sh-target-any.png)
+![sh_target_any active: the wire from 'On Map Started' to the Timeline entity turns green while revealed](images/sh-target-any.jpg)
 
 ---
 

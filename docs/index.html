@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snapmap+ — the SnapMap editor, unchained</title>
+<meta name="description" content="Snapmap+ opens up DOOM (2016) SnapMap: edit every entity property, bypass editor limits, and place anything in the engine — while your maps stay playable for everyone, consoles included.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="wordmark" href="./">Snapmap<span class="plus">+</span></a>
+    <nav class="navlinks">
+      <a href="snapmap-plus-guide.html">Guide</a>
+      <a href="https://github.com/snaphak/open-snaphak/releases">Changelog</a>
+      <a href="https://github.com/snaphak/open-snaphak">GitHub</a>
+    </nav>
+  </div>
+</header>
+<div class="hazard"></div>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <span class="eyebrow">For DOOM (2016) SnapMap</span>
+      <h1>The SnapMap editor, <em>unchained</em>.</h1>
+      <p class="lede">
+        Edit every property the engine knows. Bypass the stock editor's size, name, and palette limits.
+        Place entities SnapMap was never built to expose. Your maps stay fully playable for everyone
+        &mdash; console players included, nothing to install on their end.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" data-dl href="https://github.com/snaphak/open-snaphak/releases">
+          &#8595; Download snaphak.exe
+        </a>
+        <a class="btn btn-ghost" href="snapmap-plus-guide.html">Read the guide</a>
+      </div>
+      <p class="dl-meta">
+        <span id="dl-version">latest release</span><span class="beta-pill" id="beta-pill">Beta</span>
+        <span class="sep">&middot;</span> Windows
+        <span class="sep">&middot;</span> free &amp; open source (MIT)
+        <span class="sep">&middot;</span> self-updating &mdash; download once
+      </p>
+      <figure class="shot hero-shot">
+        <img src="images/snapmap-window-and-doom.jpg" alt="The Snapmap+ window next to the DOOM SnapMap editor" loading="eager">
+        <figcaption>Snapmap+ running alongside the SnapMap editor &mdash; live entity list, full decl editing.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <h2 class="section-title">What it opens up</h2>
+      <p class="section-sub">
+        Snapmap+ reads and writes the map data itself instead of going through the stock editor's menus
+        &mdash; so the editor's guardrails simply don't apply.
+      </p>
+      <div class="grid">
+        <div class="card">
+          <h3>Every property</h3>
+          <p>Entities carry far more fields than SnapMap's Properties menu shows. See and edit all of them, with syntax coloring and a live problem checker.</p>
+        </div>
+        <div class="card">
+          <h3>No guardrails</h3>
+          <p>Name-length caps, max sizes, fixed texture and model pickers &mdash; those are UI limits, not engine rules. Scale past the max, apply any material.</p>
+        </div>
+        <div class="card">
+          <h3>Place anything</h3>
+          <p>The engine has entity types SnapMap's palette never exposed. Place them from the <code>*Custom</code> tab in DOOM's own Create menu, then reclass at will.</p>
+        </div>
+        <div class="card">
+          <h3>Timeline editor</h3>
+          <p>Script multiple actions on multiple entities with staggered timing &mdash; a dedicated visual editor for the engine's most powerful scripting entity.</p>
+        </div>
+        <div class="card">
+          <h3>Prefabs</h3>
+          <p>Save a group of entities once, paste it into any map, organize in folders &mdash; and share a prefab as a single file with other Snapmap+ users.</p>
+        </div>
+        <div class="card">
+          <h3>Bulk editing</h3>
+          <p>SnapStack console commands edit dozens of entities at once &mdash; retexture a whole selection, bind objects to a mover, rewire signaling in three lines.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="get-started">
+    <div class="wrap">
+      <h2 class="section-title">Up and running in three steps</h2>
+      <div class="steps">
+        <div class="step">
+          <h3>Download</h3>
+          <p>Grab <code>snaphak.exe</code> with the button above. One small file &mdash; it keeps itself and Snapmap+ up to date from then on.</p>
+        </div>
+        <div class="step">
+          <h3>Double-click it</h3>
+          <p>The installer finds your DOOM 2016 install automatically, asks you to confirm, and places two files. Uninstalling restores vanilla exactly.</p>
+        </div>
+        <div class="step">
+          <h3>Open SnapMap</h3>
+          <p>Launch DOOM, open a map in the SnapMap editor &mdash; the Snapmap+ window appears alongside the game. Alt+Tab over and start editing.</p>
+        </div>
+      </div>
+      <p class="note">
+        <strong>Heads-up:</strong> Snapmap+ currently targets the DOOM build from before the April 2024 patch
+        &mdash; a one-time depot download puts you on it, and online map publishing still works.
+        The <a href="snapmap-plus-guide.html#installing-snapmap">install section of the guide</a> walks through it.
+      </p>
+    </div>
+  </section>
+
+  <section id="shots">
+    <div class="wrap">
+      <h2 class="section-title">In action</h2>
+      <div class="gallery">
+        <figure class="shot">
+          <img src="images/entities-tab.png" alt="The Entities tab with the map's entity list" loading="lazy">
+          <figcaption>Every entity in the map, live &mdash; filter, select, edit.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/timelines-tab.png" alt="The Timelines tab editing eventcalls" loading="lazy">
+          <figcaption>The Timeline editor: entity events and eventcalls with typed fields.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/custom-palette-tab.jpg" alt="The *Custom palette tab inside DOOM's Create menu" loading="lazy">
+          <figcaption>The <code>*Custom</code> tab, right inside DOOM's own Create menu.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/focus-mode.png" alt="Focus mode: the decl editor filling the window" loading="lazy">
+          <figcaption>Focus mode &mdash; distraction-free editing of a long decl.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="hazard"></div>
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-links">
+      <a href="snapmap-plus-guide.html">Guide</a>
+      <a href="https://github.com/snaphak/open-snaphak/releases">Release notes</a>
+      <a href="https://github.com/snaphak/open-snaphak">Source on GitHub</a>
+      <a href="https://github.com/snaphak/open-snaphak/blob/main/LICENSE">MIT License</a>
+    </div>
+    <div>
+      Snapmap+ is powered by <strong>SnapHak</strong> &mdash; an open-source recreation, built from our own
+      research, of the original SnapHak tool. Not affiliated with id Software or Bethesda.
+      DOOM is a trademark of id Software LLC.
+    </div>
+  </div>
+</footer>
+
+<script>
+// Resolve the newest release so the button downloads the exe directly and shows its version.
+// Falls back to the releases page (the static href) if the API is unreachable.
+(function () {
+  fetch("https://api.github.com/repos/snaphak/open-snaphak/releases")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (rels) {
+      if (!rels || !rels.length) return;
+      var pick = null;
+      for (var i = 0; i < rels.length; i++) {
+        if (!rels[i].draft && !rels[i].prerelease) { pick = rels[i]; break; }
+      }
+      if (!pick) {
+        for (var j = 0; j < rels.length; j++) {
+          if (!rels[j].draft) { pick = rels[j]; break; }
+        }
+      }
+      if (!pick) return;
+      var asset = null;
+      for (var k = 0; k < pick.assets.length; k++) {
+        if (pick.assets[k].name === "snaphak.exe") { asset = pick.assets[k]; break; }
+      }
+      if (!asset) return;
+      var links = document.querySelectorAll("[data-dl]");
+      for (var m = 0; m < links.length; m++) { links[m].href = asset.browser_download_url; }
+      document.getElementById("dl-version").textContent = pick.tag_name;
+      if (pick.prerelease) { document.getElementById("beta-pill").style.display = "inline-block"; }
+    })
+    .catch(function () { /* static fallback already points at the releases page */ });
+})();
+</script>
+
+</body>
+</html>
