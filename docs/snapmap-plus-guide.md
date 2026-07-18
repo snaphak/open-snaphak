@@ -106,6 +106,13 @@ touched, and the installer keeps a record so uninstall reverses exactly what it 
 
 ## Opening Snapmap+
 
+**DOOM must be running its Vulkan renderer — Snapmap+ won't load under OpenGL.** This is a launch-time
+setting, so set it *before* starting DOOM (or restart DOOM after changing it, if it's already running):
+
+- **In-game:** Options → Advanced, set **Renderer** to **Vulkan**, then restart DOOM for it to take effect.
+- **Without launching DOOM:** open `%USERPROFILE%\Saved Games\id Software\DOOM\base\DOOMConfig.local` in
+  a text editor, find `r_renderAPI`, and set it to `1` (Vulkan is `1`, OpenGL is `0`). Save, then launch DOOM.
+
 Once installed, open a SnapMap in editor mode. A second window — the Snapmap+ panel — will appear
 alongside the DOOM window; you'll need to switch windows (Alt+Tab) to see it, since it doesn't overlay
 the game.
