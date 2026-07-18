@@ -257,7 +257,7 @@ func friendlyHTTP(code int, token string) string {
 		return "GitHub denied or rate-limited the request (403) -- wait a few minutes and try again"
 	case http.StatusNotFound: // 404
 		if token == "" {
-			return "couldn't find the release (404) -- if this is a private or beta build, set your access token first: snaphak set-token <token>"
+			return "couldn't find the release (404) -- if no stable version has been released yet, run:  snaphak update --beta"
 		}
 		return "release not found (404) -- check the version, or your token may not have access to this repository"
 	default:
