@@ -64,6 +64,9 @@ param(
                            # the shield's hook.c/signatures.c are NOT added). Installed from dllmain bootstrap.
                            "../fault_shield/veh.c", "../fault_shield/recovery.c",
                            "../fault_shield/fault_record.c", "../fault_shield/shield_sigs.c",
+                           # crash-record capture (the crash-report dialog's evidence trail): the pure
+                           # record formatter + the fatal-path handlers/record writer.
+                           "../fault_shield/crash_record_format.c", "../fault_shield/crash_report.c",
                            "../fault_shield/fault_shield.c"),
     [string]$Out = "XINPUT1_3.dll",
     # -Diag: build the DIAGNOSTIC variant -- adds the catch-all crash + environment logger (shield_diag.c)

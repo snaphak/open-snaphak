@@ -32,7 +32,22 @@ const CATEGORIES = {
   feature: { label: 'enhancement',   tag: 'Feature' },
   docs:    { label: 'documentation', tag: 'Docs' },
   other:   { label: 'question',      tag: 'Other' },
+  /* crash reports (the in-app crash dialog): the client auto-titles them with the crash location
+   * ("Crash: MODULE+0xRVA (0xCODE)"), so the signature dedup groups identical crash sites onto one
+   * issue. They may carry a `logs` field -- anonymized log tails, delivered as a follow-up COMMENT
+   * (collapsed) so the issue body stays readable; each dedup occurrence brings its own logs comment. */
+  crash:   { label: 'crash',         tag: 'Crash' },
 };
+
+/* logs cap: well under GitHub's 65536-char comment limit once wrapped, and under the request-size
+ * guard. The client already tails each log before sending. */
+const LOGS_CAP = 50000;
+
+/* Wrap attached logs for a comment: collapsed, fenced with FOUR backticks so log text containing
+ * a ``` sequence cannot break out of the fence. */
+function logsBlock(logs) {
+  return '<details><summary>Attached logs (anonymized)</summary>\n\n````text\n' + logs + '\n````\n</details>';
+}
 
 function json(obj, status) {
   return new Response(JSON.stringify(obj), {
@@ -126,9 +141,10 @@ function issueBody(details, version, channel, contact, sig) {
   return details + '\n' + meta.join('\n');
 }
 
-function commentBody(details, version, channel, contact) {
+function commentBody(details, version, channel, contact, logs) {
   const lines = ['Another report of this, on version ' + version + (channel ? ' (' + channel + ')' : '') + ':', '', details];
   if (contact) lines.push('', '- Contact: ' + contact);
+  if (logs) lines.push('', logsBlock(logs));
   lines.push('', '<sub>Added automatically from the in-app feedback dialog (matching report signature).</sub>');
   return lines.join('\n');
 }
@@ -155,6 +171,8 @@ export default {
     const details = String(body.body || '').trim();
     const contact = String(body.contact || '').trim().slice(0, 200);
     const version = String(body.version || 'unknown').trim().slice(0, 40) || 'unknown';
+    /* optional log attachment (crash reports only -- ignored for the other categories). */
+    const logs = body.category === 'crash' ? String(body.logs || '').slice(0, LOGS_CAP).trim() : '';
     if (!cat) return json({ ok: false, error: 'bad category' }, 400);
     if (title.length < 3 || title.length > 120) return json({ ok: false, error: 'bad title' }, 400);
     if (details.length < 10 || details.length > 8000) return json({ ok: false, error: 'bad details' }, 400);
@@ -185,7 +203,7 @@ export default {
       const n = match.number;
       const c = await gh(token, '/repos/' + REPO + '/issues/' + n + '/comments', {
         method: 'POST',
-        body: { body: commentBody(details, version, channel, contact) },
+        body: { body: commentBody(details, version, channel, contact, logs) },
       });
       if (c) return json({ ok: true, mode: 'appended', number: n });
       /* comment failed -> fall through and file a fresh issue rather than dropping the report */
@@ -202,6 +220,15 @@ export default {
       },
     });
     if (!issue || !issue.number) return json({ ok: false, error: 'upstream' }, 502);
+    /* logs ride a follow-up comment, not the issue body: the body stays a readable crash summary, and
+     * every occurrence (create OR dedup-append) then carries its own logs the same way. Best-effort --
+     * a failed comment never fails the report (the issue exists; the response stays ok). */
+    if (logs) {
+      await gh(token, '/repos/' + REPO + '/issues/' + issue.number + '/comments', {
+        method: 'POST',
+        body: { body: 'Logs from the reporting session:\n\n' + logsBlock(logs) },
+      });
+    }
     return json({ ok: true, mode: 'created', number: issue.number });
   },
 };

@@ -15,6 +15,7 @@
 #include <windows.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "crash_report.h"
 #include "shield_sigs.h"
 
 uint8_t *g_doom_base = NULL;   /* shield's view of the DOOM module (set by shield_install from the backend) */
@@ -110,4 +111,9 @@ void shield_install(uint8_t *doom_base, size_t doom_size)
         shield_raw("shield_install: FAILED to install hooks");
         OutputDebugStringA("[shield] FAILED to install hooks\n");
     }
+    /* Crash-record capture (crash_report.c): the durable evidence trail behind the in-app crash-report
+     * dialog. Armed EVEN IF the recovery hooks failed -- a build whose sigs shifted still deserves crash
+     * records. Off the loader lock (we are on the bootstrap thread). */
+    crash_report_init();
+    crash_report_arm_fatal_handlers();
 }

@@ -206,4 +206,14 @@
 #define RVA_LAST_ERROR_MSG 0x6DDD990u  /* DAT_146ddd990: engine's last formatted Error/FatalError text (0x800 B) */
 #define HARVEST_MSG_MAX    0x200u      /* cap copied into the toast text (the toast renders a short line) */
 
+/* ---- ThrowInfo RVAs: which C++ exception CLASS a DOOM throw carries (veh.c LAYER 2 reads them off
+ * ExceptionInformation[2] - image base). idException is the RECOVERABLE class (the Frame catch can
+ * resume); idFatalException ALWAYS rethrows out of the Frame catch to the terminal exit -- so seeing it
+ * first-chance is the last moment to write a crash record for that death. NON-SIG-ABLE (rdata ThrowInfo
+ * structs) -> recipe-tagged literals. RE-DERIVE per build: the two _CxxThrowException call sites in the
+ * dispatcher 0x1A08E80 -- the ThrowInfo operand of the level-6 throw (idException) and the level-7 throw
+ * (idFatalException). */
+#define RVA_THROWINFO_RECOVERABLE 0x2ded690u  /* idException ThrowInfo (the survivable throw) */
+#define RVA_THROWINFO_FATAL       0x2ded990u  /* idFatalException ThrowInfo (terminal -> record NOW) */
+
 #endif /* SHIELD_ENGINE_LAYOUT_H */

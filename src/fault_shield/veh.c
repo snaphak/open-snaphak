@@ -30,10 +30,11 @@
 #include <string.h>
 #include "engine_layout.h"
 #include "fault_record.h"
+#include "crash_report.h"
 #include "recovery.h"
 #include "shield_sigs.h"
 #include "veh.h"
-#pragma comment(lib, "user32.lib")   /* MessageBoxA -- the crash popup */
+#pragma comment(lib, "user32.lib")   /* ClipCursor/ShowCursor -- free the captured mouse on a Class-B fault */
 
 extern uint8_t *g_doom_base;
 extern size_t   g_doom_size;
@@ -56,11 +57,13 @@ static char g_why[200];   /* persists: Error(6) reads it as the fmt (rcx) after 
 static char g_diag[260];
 static char g_rndiag[220];
 
-/* ---- CRASH POPUP + STACK: name exactly what faulted (type + site + call stack) to the log AND a user
- * dialog, so a serious fault is never silent. Rate-limited (a per-frame fault would otherwise spam). ------ */
+/* ---- CLASS-B CRASH RECORD + STACK: name exactly what faulted (type + site + call stack) to the log
+ * AND a crash record, so a serious fault is never silent. The record is what raises the in-app
+ * crash-report dialog (the process SURVIVES a Class-B fault, so the dialog appears seconds later --
+ * the old blocking native message box this replaced is gone). Rate-limited (a per-frame fault would
+ * otherwise spam). ------ */
 #define SHIELD_MAX_POPUP 3
 static volatile LONG g_popup_seen = 0;
-static char g_crashbody[1024];
 static char g_crashstk[512];
 
 /* ---- FIRST-CHANCE CRASH LOGGER (crash-forensics: name a death the recovery paths never touch) --------
@@ -227,6 +230,12 @@ static void capture_fault_stack(const CONTEXT *ctx_in, char *out, size_t cap, in
             if (ctx.Rip == 0) break;
         } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
     }
+}
+
+/* Public wrapper (veh.h): the crash-record writer captures fatal-path stacks with the same walker. */
+void shield_capture_stack(const CONTEXT *ctx, char *out, size_t cap, int maxframes)
+{
+    capture_fault_stack(ctx, out, cap, maxframes);
 }
 
 /* A committed, writable 4-byte slot? (guard before the shield pokes engine memory). */
@@ -425,6 +434,25 @@ static LONG CALLBACK shield_veh(PEXCEPTION_POINTERS ep)
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
         force_recovery_gate();
         log_engine_error_text();     /* record the engine's verbatim error text -- e.g. a masked load-time FatalError */
+        /* TERMINAL throw -> crash record NOW. An idFatalException ALWAYS rethrows out of the Frame catch
+         * to the terminal exit (the FatalError(7) downgrade patches the common wrapper to level 6, so this
+         * class only appears via a direct level-7 dispatcher path) -- and that exit is a caught-C++ unwind,
+         * so no unhandled-exception filter ever fires for it. This first-chance sight of the ThrowInfo is
+         * the ONLY capture point. One-shot; carries the engine's verbatim text + the throwing stack. The
+         * original SnapHak proved this text is capturable at the sink -- it detoured the sink into a
+         * message box + TerminateProcess; we write the record and change NOTHING about the throw. */
+        if (ti == RVA_THROWINFO_FATAL) {
+            static volatile LONG s_fatal_throw_recorded = 0;
+            if (InterlockedExchange(&s_fatal_throw_recorded, 1) == 0) {
+                __try {
+                    static char stk[1024], msg[HARVEST_MSG_MAX];
+                    capture_fault_stack(ep->ContextRecord, stk, sizeof stk, 20);
+                    msg[0] = '\0';
+                    shield_last_engine_msg(msg, sizeof msg);
+                    crash_report_file("engine_fatalerror", code, 0, 0, DOOM_MODULE_NAME, stk, msg, "");
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
         if (InterlockedIncrement(&g_cxx_seen) <= 10) {
             _snprintf_s(g_diag, sizeof g_diag, _TRUNCATE,
                 "DOOM C++ throw -> forced gate (errState=%d load_state=%d throwInfo_rva=0x%llx)",
@@ -588,8 +616,20 @@ static LONG CALLBACK shield_veh(PEXCEPTION_POINTERS ep)
      * (illegal/priv instruction, int/float divide, in-page, ...). Redirect into the engine's own recoverable
      * Error(6) + the proven editor-exit -> My-Maps browser. Runaway-guarded; CAN surface DOOM's recoverable-
      * error drop-to-menu -- survivable, vastly better than the hard crash these faults would otherwise be. */
-    if (InterlockedIncrement(&g_redirects) > SHIELD_MAX_REDIRECTS)
-        return EXCEPTION_CONTINUE_SEARCH;                     /* runaway guard -> let the OS take it */
+    if (InterlockedIncrement(&g_redirects) > SHIELD_MAX_REDIRECTS) {
+        /* runaway guard -> let the OS take it. This is the shield GIVING UP -- the process is very
+         * likely about to die, so write a fatal crash record first (one-shot; the branch re-enters on
+         * every subsequent fault). LOG-ONLY: the disposition below is unchanged. */
+        static volatile LONG s_runaway_recorded = 0;
+        if (InterlockedExchange(&s_runaway_recorded, 1) == 0) {
+            __try {
+                capture_fault_stack(ep->ContextRecord, g_crashstk, sizeof g_crashstk, 14);
+                crash_report_file("fatal", code, rva, (uintptr_t)fault_addr, DOOM_MODULE_NAME,
+                                  g_crashstk, "", "");
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
 
     _snprintf_s(g_why, sizeof g_why, _TRUNCATE,
         "shield: caught fault 0x%lx at rip+0x%llx -> recovered via Error(6)",
@@ -597,36 +637,26 @@ static LONG CALLBACK shield_veh(PEXCEPTION_POINTERS ep)
     shield_fault f = { "load", -1, g_why, rva, (uintptr_t)fault_addr };
     shield_emit(&f);
 
-    /* CRASH DETAIL + USER POPUP: capture the faulting call stack, log it (the citable record), and show the
-     * user a dialog naming exactly what faulted -- so a serious fault is never silent. Rate-limited
-     * (SHIELD_MAX_POPUP) so a per-frame fault can't spam; SEH-guarded so building/showing it can never re-fault
-     * the VEH. MessageBoxA blocks the faulting thread until dismissed, then we resume into the Error(6) recovery
-     * below -- acceptable for a crash. */
+    /* CRASH DETAIL + CRASH RECORD: capture the faulting call stack, log it (the citable record), and
+     * write a crash record -- the SnapHak Studio UI polls for it and raises the styled crash-report
+     * dialog seconds later (the process survives a Class-B fault, so the dialog can be real UI; the
+     * blocking native message box this replaced parked the faulting thread and could only ever say
+     * "look at the log"). Rate-limited (SHIELD_MAX_POPUP) so a per-frame fault can't spam; SEH-guarded
+     * so building it can never re-fault the VEH. No engine error text here by design: a raw AV never
+     * stashed one, so the last-error buffer would be a STALE previous message (the same staleness rule
+     * notice_tick documents). */
     if (InterlockedIncrement(&g_popup_seen) <= SHIELD_MAX_POPUP) {
         __try {
-            const char *dir = "";
-            if (is_av && er->NumberParameters >= 1)
-                dir = er->ExceptionInformation[0] == 1 ? " (write to)" :
-                      er->ExceptionInformation[0] == 8 ? " (execute at)" : " (read from)";
             capture_fault_stack(ep->ContextRecord, g_crashstk, sizeof g_crashstk, 14);
             shield_fault sk = { "stack", (int)code, g_crashstk, rva, (uintptr_t)fault_addr };
             shield_emit(&sk);   /* the full call stack -> shield_faults.log */
-            _snprintf_s(g_crashbody, sizeof g_crashbody, _TRUNCATE,
-                "SnapHak caught a fault in DOOM. The editor will try to recover, but this session may be "
-                "unstable -- save to a new slot and restart if things look wrong.\n\n"
-                "Fault:  %s (0x%08lx)%s 0x%llx\n"
-                "Where:  DOOMx64vk.exe+0x%llx\n\n"
-                "Call stack:\n    %s\n\n"
-                "Full details were written to:\n    <DOOM folder>\\snaphak\\logs\\shield_faults.log",
-                exc_name(code), (unsigned long)code, dir, (unsigned long long)(uintptr_t)fault_addr,
-                (unsigned long long)rva, g_crashstk[0] ? g_crashstk : "(unavailable)");
-            /* FREE THE MOUSE: DOOM clips the cursor to its window + hides it (captured input), so the user
-             * can't move the pointer to the dialog. Un-clip + force the system cursor visible (ShowCursor is
-             * a refcount -- loop until non-negative, bounded) so the OK button is actually reachable. */
+            crash_report_file("classB", code, rva, (uintptr_t)fault_addr, DOOM_MODULE_NAME,
+                              g_crashstk, "", "");
+            /* FREE THE MOUSE: DOOM clips the cursor to its window + hides it (captured input); un-clip +
+             * force it visible (ShowCursor is a refcount -- bounded loop) so the user can actually reach
+             * the SnapHak Studio window where the crash dialog appears. */
             ClipCursor(NULL);
             { int cc = 0; while (ShowCursor(TRUE) < 0 && ++cc < 32) {} }
-            MessageBoxA(NULL, g_crashbody, "SnapHak - Fault Caught",
-                        MB_OK | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND);
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 

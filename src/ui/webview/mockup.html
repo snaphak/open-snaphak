@@ -312,6 +312,16 @@
   .modal.report textarea { min-height: 110px; }
   .report-hp { display: none; }   /* honeypot -- humans never see or fill it; bots that blind-fill every field do */
 
+  /* crash-report dialog: branded header (the menubar's own logo + wordmark) + record readouts. */
+  .modal.crash { width: 560px; }
+  .crash-brandbar { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+  .crash-brandbar img { width: 20px; height: 20px; border-radius: 4px; }
+  .crash-brandbar .cb-name { font-weight: 700; font-size: 13px; }
+  .crash-summary { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 11px; white-space: pre-line; }
+  .crash-stack { max-height: 150px; overflow: auto; white-space: pre; font-family: Consolas, monospace; font-size: 10px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .crash-attach { display: flex; align-items: flex-start; gap: 7px; margin-top: 6px; color: var(--muted); font-size: 11px; }
+  .crash-attach input { width: auto; margin-top: 2px; flex-shrink: 0; }
+
   .ctxmenu { position: absolute; z-index: 1000; background: var(--panel); border: 1px solid var(--border2); border-radius: 6px; box-shadow: 2px 4px 12px rgba(0,0,0,0.22); min-width: 140px; padding: 4px; display: none; }
   .ctxmenu div { padding: 5px 12px; border-radius: 4px; cursor: default; }
   .ctxmenu div:hover { background: var(--sel); color: var(--selText); }
@@ -545,6 +555,23 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="crashModal" style="display:none;">
+  <div class="modal crash">
+    <div class="crash-brandbar"><img id="crashLogo" alt=""><span class="cb-name">Snapmap+</span></div>
+    <div class="modal-title" id="crashTitle">Snapmap+ recovered from a crash</div>
+    <div class="muted" id="crashSub" style="margin-bottom:4px;"></div>
+    <div class="crash-summary" id="crashSummary"></div>
+    <div class="crash-stack" id="crashStack"></div>
+    <label>What were you doing when it happened? (optional)</label>
+    <textarea id="crDesc" maxlength="4000" placeholder="e.g. placing a prefab, wiring a timeline, loading a map... anything you remember helps."></textarea>
+    <label>Contact (optional)</label><input type="text" id="crContact" maxlength="200" placeholder="Email / Discord / GitHub -- only if you want a reply">
+    <label class="crash-attach"><input type="checkbox" id="crAttach" checked>
+      Attach recent logs (recommended) -- log text is anonymized before sending: your Windows account and machine names are removed.</label>
+    <input type="text" id="crWebsite" class="report-hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+    <div class="modal-actions"><button class="btn" id="crDismiss">Dismiss</button><button class="btn primary" id="crSend">Send report</button></div>
+  </div>
+</div>
+
 <!-- the decl editor's schema table (generated from the game's own reflection schema and shipped
      declaration data by maintainer tooling). In-game the build inlines it into this file; this src tag
      is how the browser preview loads it. Absent table -> the editor degrades to structural checks only. -->
@@ -731,6 +758,16 @@
       if (rOk) previewReportSigs[rSig] = true;
       setTimeout(function(){ onMessage({kind:'reportResult', ok:rOk, mode:rMode, number:42}); }, 600);
     }
+    else if (o.cmd === 'crashSubmit') {
+      // preview only: prove the crash submit carries the required fields, then fake the round-trip
+      // (same dedup memory as the feedback demo, keyed on the auto-title's crash signature).
+      var cOk = !!(o.title && o.body);
+      var cSig = cOk ? ('crash|' + o.title.toLowerCase()) : '';
+      var cMode = (cOk && previewReportSigs[cSig]) ? 'appended' : 'created';
+      if (cOk) previewReportSigs[cSig] = true;
+      setTimeout(function(){ onMessage({kind:'reportResult', ok:cOk, mode:cMode, number:43}); }, 600);
+    }
+    else if (o.cmd === 'crashDismiss') { /* preview: nothing to clear */ }
     else if (o.cmd === 'saveTimeline') {
       // preview only: no real backend to commit to -- just prove the patched JSON is well-formed and
       // contains what we expect, then fake success. Real validation happens in-game against the real engine.
@@ -2489,14 +2526,26 @@
       else if (d.result === 0) toast('Save refused: incompatible class + inherit', 'warn');
       else toast('Save failed (see log)', 'err');
     } else if (d.kind === 'reportResult') {
-      reportSendDone();
-      if (d.ok) {
-        showReportModal(false);
-        toast(d.mode === 'appended' ? 'Thanks! This matched a known report -- your confirmation was added.'
-                                    : 'Report sent -- thank you!', 'ok');
+      if (crashInFlight) {   // the crash dialog and the feedback dialog share the relay round-trip
+        crashSendDone(d);
       } else {
-        // keep the dialog open with everything the user typed -- nothing is lost on a failed send
-        toast('Could not send the report -- check your connection and try again', 'err');
+        reportSendDone();
+        if (d.ok) {
+          showReportModal(false);
+          toast(d.mode === 'appended' ? 'Thanks! This matched a known report -- your confirmation was added.'
+                                      : 'Report sent -- thank you!', 'ok');
+        } else {
+          // keep the dialog open with everything the user typed -- nothing is lost on a failed send
+          toast('Could not send the report -- check your connection and try again', 'err');
+        }
+      }
+    } else if (d.kind === 'crashPending') {
+      // the backend left a crash record: in-session (a survived fault seconds ago) or from a past
+      // session (the process died). Auto-open the dialog -- dismiss/send both clear it native-side.
+      crashRecord = d.record || null;
+      if (crashRecord) {
+        crashPopulate(crashRecord, d.count || 1);
+        if (!crashInFlight) showCrashModal(true);
       }
     } else if (d.kind === 'editorSelect') {
       selectedEids = {}; var esel = d.eids || []; for (var ei=0; ei<esel.length; ei++) selectedEids[esel[ei]] = true;
@@ -3500,6 +3549,84 @@
       website: document.getElementById('rpWebsite').value || ''   // honeypot -- must stay empty
     })});
   });
+  // ---- crash-report dialog (auto-opens when the backend leaves a crash record) ----
+  var crModal = document.getElementById('crashModal');
+  var crashRecord = null, crashInFlight = false;
+  // branded header: reuse the menubar's own inline logo (copy the src -- never duplicate the data URI)
+  (function(){
+    var mb = document.querySelector('.menubar .icon'), cl = document.getElementById('crashLogo');
+    if (mb && cl) cl.src = mb.src;
+  })();
+  function showCrashModal(s){ if (crModal) crModal.style.display = s ? 'flex' : 'none'; }
+  function crashSendDone(d){
+    crashInFlight = false;
+    var b = document.getElementById('crSend');
+    b.disabled = false; b.textContent = 'Send report';
+    if (d.ok) {
+      showCrashModal(false);
+      toast(d.mode === 'appended' ? 'Thanks! This crash matched a known report -- your confirmation and logs were added.'
+                                  : 'Crash report sent -- thank you!', 'ok');
+    } else {
+      // keep the dialog (and the pending record) -- nothing is lost on a failed send
+      toast('Could not send the crash report -- check your connection and try again', 'err');
+    }
+  }
+  function crashPopulate(rec, count){
+    var fatal = rec.kind !== 'classB';
+    document.getElementById('crashTitle').textContent =
+      fatal ? 'Snapmap+ crashed last session' : 'Snapmap+ recovered from a crash';
+    var sub = 'Help get it fixed: this report is filed as a public issue on the project tracker. Nothing is sent without your click.';
+    if (count > 1) sub = count + ' crashes were recorded -- showing the latest. ' + sub;
+    document.getElementById('crashSub').textContent = sub;
+    var engineText = String(rec.engineText || '').replace(/\^\d/g, '').trim();  // strip engine color codes
+    var line = 'Fault ' + (rec.code || '?') + ' at ' + (rec.module || '?') + '+' + (rec.rip_rva || '0x0');
+    if (rec.time) line += '  --  ' + rec.time;
+    if (rec.version) line += '  --  version ' + rec.version;
+    document.getElementById('crashSummary').textContent = engineText ? engineText + '\n' + line : line;
+    document.getElementById('crashStack').textContent = rec.stack ? rec.stack : '(no call stack captured)';
+  }
+  document.getElementById('crDismiss').addEventListener('click', function(){
+    post({cmd:'crashDismiss'});   // handled: the pending records are cleared; local logs/dump stay
+    showCrashModal(false);
+  });
+  document.getElementById('crSend').addEventListener('click', function(){
+    if (crashInFlight || !crashRecord) return;
+    var rec = crashRecord;
+    // the title embeds the crash location, so the relay's signature dedup groups identical crashes
+    var title = 'Crash: ' + (rec.module || 'unknown') + '+' + (rec.rip_rva || '0x0') + ' (' + (rec.code || '0x0') + ')';
+    if (title.length > 120) title = title.slice(0, 120);
+    var desc = (document.getElementById('crDesc').value || '').trim();
+    var engineText = String(rec.engineText || '').replace(/\^\d/g, '').trim();
+    var lines = [];
+    if (desc) lines.push(desc, '');
+    lines.push('--- Crash details (recorded automatically) ---');
+    lines.push('Kind: ' + (rec.kind || 'unknown'));
+    lines.push('Fault: ' + (rec.code || '?') + ' at ' + (rec.module || '?') + '+' + (rec.rip_rva || '0x0') +
+               (rec.fault_addr && rec.fault_addr !== '0x0' ? ' (data address ' + rec.fault_addr + ')' : ''));
+    if (rec.time) lines.push('When: ' + rec.time);
+    if (rec.version) lines.push('Version at crash: ' + rec.version);
+    if (engineText) lines.push('Engine message: ' + engineText);
+    lines.push('Call stack:', rec.stack ? rec.stack : '(none captured)');
+    if (rec.dump)
+      lines.push('', 'A crash dump was saved locally (snaphak\\logs\\snaphak_crash.dmp in the game folder) -- not uploaded; a maintainer may ask for it.');
+    var body = lines.join('\n');
+    if (body.length > 7800) body = body.slice(0, 7800) + '\n[truncated]';
+    crashInFlight = true;
+    var b = document.getElementById('crSend');
+    b.disabled = true; b.textContent = 'Sending...';
+    post({cmd:'crashSubmit', title: title, body: body,
+          contact: (document.getElementById('crContact').value || '').trim(),
+          attachLogs: document.getElementById('crAttach').checked ? 1 : 0,
+          website: document.getElementById('crWebsite').value || ''});   // honeypot -- must stay empty
+  });
+  // browser-preview demo hook: window.previewCrash() injects a fake crash record end-to-end.
+  if (PREVIEW) window.previewCrash = function(){
+    onMessage({kind:'crashPending', count:2, record:{
+      kind:'classB', code:'0xc0000005', rip_rva:'0x5e0b12', fault_addr:'0x3f00000060',
+      module:'DOOMx64vk.exe', stack:'DOOM+0x5e0b12\n    DOOM+0x5e6410\n    DOOM+0x523140',
+      engineText:'', dump:'', version:'0.2.0-beta.3', time:'2026-07-18 12:00:00'}});
+  };
+
   var pcCreateBtn = document.getElementById('prefabCreateBtn');
   if (pcCreateBtn) pcCreateBtn.addEventListener('click', function(){
     if (npSelInfo) npSelInfo.textContent = 'From ' + editorSelCount + ' selected ' + (editorSelCount === 1 ? 'entity' : 'entities');

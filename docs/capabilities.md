@@ -111,14 +111,18 @@ editor (run `sh` in the console if it doesn't auto-open). Full detail: [`webview
 | Prefabs tab | Save and load selection prefabs as JSON files under `%USERPROFILE%\snaphak\prefabs\` — one folder level with rename/delete/drag-between-folders; per-prefab description + tags (stored in a `<name>.meta.json` sidecar; the filter box matches tags across folders); "Load / Place" stages the prefab and the user pastes it with Ctrl+V. |
 | Timelines tab | The list of timeline entities; opening one edits its events and per-event parameters, with reference/decl/enum parameters constrained to valid choices, entity pickers for entity-typed args, and per-event documentation. |
 | Feedback ("?") | The "?" button at the statusbar's right edge opens the Send-feedback dialog: category (bug / feature / incorrect info / other), title, details, optional contact. Sending files it as a labeled issue on this repo's tracker — no GitHub account needed. See the network note below + [`feedback.md`](feedback.md). |
+| Crash reports | When the game hits a serious fault, a crash record is saved locally and the crash-report dialog auto-opens (in-session for a survived fault, next launch otherwise): the error + call stack, an optional description, and an opt-out checkbox to attach anonymized log tails. Sending files a `crash`-labeled issue; repeat crashes at the same location group onto one issue. See [`feedback.md`](feedback.md). |
 
 ## Network use
 
 The clone makes exactly **one** kind of network request, and only on an explicit user action: clicking
-**Send** in the feedback dialog POSTs the typed report (category / title / details / optional contact)
-plus the installed version string over HTTPS to the project's feedback relay
-([`feedback/`](../feedback/README.md)), which files it as a public issue on this repo's tracker.
-Nothing is downloaded, nothing runs in the background, and nothing else is ever sent. (The installer
+**Send** in the feedback dialog — or in the crash-report dialog — POSTs the typed report (category /
+title / details / optional contact) plus the installed version string over HTTPS to the project's
+feedback relay ([`feedback/`](../feedback/README.md)), which files it as a public issue on this repo's
+tracker. A crash report can additionally attach the tails of the local log files, but only when its
+"Attach recent logs" box is checked, and the text is anonymized first (account / profile / machine
+names scrubbed — see [`feedback.md`](feedback.md)); the local crash dump is never uploaded. Nothing is
+downloaded, nothing runs in the background, and nothing else is ever sent. (The installer
 separately talks to GitHub Releases for `snaphak update`, and to Microsoft's bootstrapper if the
 WebView2 runtime is missing — both documented in [`packaging.md`](packaging.md).)
 

@@ -133,6 +133,12 @@ static int harvest_engine_msg(char *out, size_t n)
     return out[0] != '\0';
 }
 
+/* Public wrapper for the crash-record writer: same SEH-guarded read, callable from crash contexts. */
+int shield_last_engine_msg(char *out, size_t n)
+{
+    return harvest_engine_msg(out, n);
+}
+
 /* Harvest + log the engine's own last-formatted-error text on a downgraded-FatalError / Error(6) throw,
  * INDEPENDENT of the in-editor toast (notice_tick only fires in-editor, so a LOAD-time FatalError -- e.g. a
  * decl-registry "Remove_Locked: Resource wasn't found by ID" -- would otherwise never record its verbatim text,

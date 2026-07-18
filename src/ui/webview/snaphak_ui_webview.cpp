@@ -35,6 +35,7 @@
 #include "WebView2.h"
 #include "snaphak_iface.h"
 #include "mockup_html.h"
+#include "report_scrub.h"   /* pure anonymization scrub + tail for the crash-report log attachment */
 #include "../sh_entity_desc.h" /* GENERATED: OUR RE-extracted Inherit/Classname descriptions (same table sh_tabs.cpp uses) */
 #include "../sh_event_catalog.h" /* GENERATED: OUR event-def catalog, 1611 events (same table sh_timeline.cpp uses) */
 #include "../sh_entity_asset_lists.h" /* GENERATED: OUR per-entity-class model/anim asset lists (same table sh_timeline.cpp uses) */
@@ -184,6 +185,21 @@ static std::wstring poc_json_w(const char *utf8)
         case L'\\': o += L"\\\\"; break; case L'"': o += L"\\\""; break;
         case L'\n': o += L"\\n"; break;  case L'\r': o += L"\\r"; break; case L'\t': o += L"\\t"; break;
         default: if (c < 0x20) { wchar_t b[8]; _snwprintf_s(b, _countof(b), _TRUNCATE, L"\\u%04x", (unsigned)c); o += b; } else o += c;
+        }
+    }
+    return o;
+}
+/* narrow (UTF-8) JSON string-body escaper -- the crash payload is composed host-side as UTF-8. */
+static std::string poc_json_n(const std::string &s)
+{
+    std::string o; o.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+        case '\\': o += "\\\\"; break; case '"': o += "\\\""; break;
+        case '\n': o += "\\n"; break;  case '\r': o += "\\r"; break; case '\t': o += "\\t"; break;
+        default:
+            if (c < 0x20) { char b[8]; _snprintf_s(b, _countof(b), _TRUNCATE, "\\u%04x", (unsigned)c); o += b; }
+            else o += (char)c;
         }
     }
     return o;
@@ -1321,11 +1337,14 @@ static void poc_apply_save_prefab_meta(const std::string &name, const std::strin
 
 /* ------------------------------------------------------------------ feedback report ("?" dialog) --- */
 /* CAPABILITY NOTE (this is the frontend's ONLY network touch, and why winhttp appears in the import
- * table): one user-initiated HTTPS POST per click on the feedback dialog's Send button, carrying exactly
- * what the user typed (category/title/details/optional contact) plus the installed version string, to
- * the project's feedback relay -- which files it as a public issue on the project's GitHub tracker.
- * Nothing is downloaded or executed, nothing runs periodically, nothing is sent without that explicit
- * click. Full pipeline + the relay's own source: docs/feedback.md + feedback/.
+ * table): one user-initiated HTTPS POST per click on a Send button -- the feedback dialog's, or the
+ * crash-report dialog's -- carrying exactly what the user typed (category/title/details/optional
+ * contact) plus the installed version string, and, for a crash report the user chose to attach logs
+ * to, the ANONYMIZED tails of the local logs (account/machine names scrubbed first; see
+ * report_scrub.h), to the project's feedback relay -- which files it as a public issue on the
+ * project's GitHub tracker. Nothing is downloaded or executed, nothing runs periodically, nothing is
+ * sent without that explicit click. Full pipeline + the relay's own source: docs/feedback.md +
+ * feedback/.
  *
  * The POST runs on its own short-lived thread: the think loop and the WebView2 callbacks share ONE STA
  * thread, so a synchronous WinHTTP call there would freeze the whole UI for up to the timeout. The
@@ -1393,6 +1412,120 @@ static DWORD WINAPI report_thread(LPVOID)
     strcpy_s(g_report_mode, sizeof g_report_mode, mode[0] ? mode : "created");
     g_report_done = true;   /* the think loop posts reportResult to the page */
     return 0;
+}
+
+/* ------------------------------------------------------------------ crash reports ------------------ */
+/* The backend's fault machinery writes one small JSON crash record per serious fault to
+ * <game>\snaphak\crash\pending-*.json (crash-safe, at fault time). This side is the REPORTING end:
+ * the think loop polls that directory (~2 s, cheap FindFirstFile) and posts the latest record to the
+ * page, which raises the crash-report dialog -- in-session when the fault was survived, on the next
+ * launch when it wasn't. One mechanism, both timings. Submission rides the exact same relay POST as
+ * the feedback dialog (category "crash"), with one enrichment done here: optionally attaching the
+ * tails of the local logs, ANONYMIZED first (the account/profile/machine names are scrubbed -- see
+ * report_scrub.h). Dismiss and a successful send both clear the pending records (never nag twice);
+ * the full logs and any crash dump stay untouched on disk. */
+static const char *kCrashDir  = "snaphak\\crash";        /* CWD = the game dir (poc_log's convention) */
+static const char *kCrashGlob = "snaphak\\crash\\pending-*.json";
+#define CRASH_RECORD_READ_CAP  16384                      /* a record is ~2 KB; cap the read anyway */
+#define CRASH_LOG_TAIL_KEEP    (15 * 1024)                /* per-log tail budget (3 logs ~= 45 KB) */
+
+static bool        g_report_is_crash = false;   /* the in-flight relay POST came from the crash dialog */
+static bool        g_page_loaded     = false;   /* NavigationCompleted fired -- the page can receive */
+static std::string g_crash_last_sent;           /* latest pending-*.json already announced to the page */
+
+/* Count pending records; `latest` = lexicographically-largest name (the stamp format makes that the
+ * newest). Returns 0 (and clears latest) when none. */
+static int crash_scan(std::string &latest)
+{
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(kCrashGlob, &fd);
+    int n = 0;
+    latest.clear();
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        n++;
+        if (latest.empty() || latest < fd.cFileName) latest = fd.cFileName;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return n;
+}
+
+static std::string crash_read_record(const std::string &name)
+{
+    std::string path = std::string(kCrashDir) + "\\" + name, data;
+    FILE *f = nullptr;
+    if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return data;
+    char buf[4096]; size_t r;
+    while (data.size() < CRASH_RECORD_READ_CAP && (r = fread(buf, 1, sizeof buf, f)) > 0)
+        data.append(buf, r);
+    fclose(f);
+    /* the record must be one bare JSON object -- it is spliced verbatim into a crashPending message. */
+    if (data.empty() || data.front() != '{' || data.back() != '}') data.clear();
+    return data;
+}
+
+static void crash_clear_pending()
+{
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(kCrashGlob, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        std::string path = std::string(kCrashDir) + "\\" + fd.cFileName;
+        DeleteFileA(path.c_str());
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+/* Tail + ANONYMIZE the local logs for the attachment. Seeks (never reads a whole log -- they are
+ * append-only and can be large), snaps the cut to a line start, then scrubs the account name, the
+ * profile-folder name, and the machine name out of the text (case-insensitive, -> <user>/<machine>).
+ * Anonymous-by-design is the feature's contract; the dialog says so next to the checkbox. */
+static std::string crash_collect_logs()
+{
+    static const char *files[] = { "shield_faults.log", "snaphak_backend.log", "webview_poc.log" };
+    char user[64] = "", comp[64] = "", prof[MAX_PATH] = "";
+    const char *profleaf = "";
+    DWORD un = sizeof user, cn = sizeof comp;
+    GetUserNameA(user, &un);
+    GetComputerNameA(comp, &cn);
+    if (GetEnvironmentVariableA("USERPROFILE", prof, MAX_PATH)) {
+        const char *s = strrchr(prof, '\\');
+        if (s) profleaf = s + 1;
+    }
+    std::string out;
+    std::vector<char> raw(CRASH_LOG_TAIL_KEEP + 4096), scrub(2 * (CRASH_LOG_TAIL_KEEP + 4096));
+    for (const char *fn : files) {
+        std::string path = std::string("snaphak\\logs\\") + fn;
+        FILE *f = nullptr;
+        if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) continue;
+        _fseeki64(f, 0, SEEK_END);
+        long long size = _ftelli64(f);
+        long long start = size > (long long)raw.size() ? size - (long long)raw.size() : 0;
+        _fseeki64(f, start, SEEK_SET);
+        size_t got = fread(raw.data(), 1, raw.size(), f);
+        fclose(f);
+        if (got == 0) continue;
+        size_t off = rs_tail_offset(raw.data(), got, CRASH_LOG_TAIL_KEEP);
+        std::string chunk(raw.data() + off, got - off);
+        /* scrub passes: account name, profile-folder leaf (when different), machine name. */
+        rs_scrub(scrub.data(), scrub.size(), chunk.c_str(), user, "<user>");
+        chunk = scrub.data();
+        if (profleaf[0] && _stricmp(profleaf, user) != 0) {
+            rs_scrub(scrub.data(), scrub.size(), chunk.c_str(), profleaf, "<user>");
+            chunk = scrub.data();
+        }
+        rs_scrub(scrub.data(), scrub.size(), chunk.c_str(), comp, "<machine>");
+        chunk = scrub.data();
+        out += "==== ";
+        out += fn;
+        out += (start > 0) ? " (tail) ====\n" : " ====\n";
+        out += chunk;
+        if (out.empty() || out.back() != '\n') out += "\n";
+        out += "\n";
+    }
+    return out;
 }
 
 /* ------------------------------------------------------------------ window / WebView2 -------------- */
@@ -1564,6 +1697,44 @@ static HRESULT on_message(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventA
                         }
                     } else poc_post_json(L"{\"kind\":\"reportResult\",\"ok\":false}");
                 }
+            } else if (cmd == L"crashSubmit") {
+                /* the crash dialog's Send: unlike reportSubmit (opaque pipe), the payload is composed
+                 * HERE -- the one enrichment only this side can do is the anonymized log attachment.
+                 * Rides the same worker thread + reportResult plumbing as the feedback dialog. */
+                std::wstring title, bodyw, contact, hp;
+                int attach = 0;
+                json_get_wstr(json, L"title", title);
+                json_get_wstr(json, L"body", bodyw);
+                json_get_wstr(json, L"contact", contact);
+                json_get_wstr(json, L"website", hp);
+                json_get_int(json, L"attachLogs", &attach);
+                if (!title.empty() && !bodyw.empty() && !g_report_inflight) {
+                    std::string logs = attach ? crash_collect_logs() : std::string();
+                    std::string p;
+                    p.reserve(logs.size() + 12288);
+                    p += "{\"category\":\"crash\",\"title\":\"";  p += poc_json_n(w_to_utf8(title));
+                    p += "\",\"body\":\"";                         p += poc_json_n(w_to_utf8(bodyw));
+                    p += "\",\"contact\":\"";                      p += poc_json_n(w_to_utf8(contact));
+                    p += "\",\"version\":\"";                      p += poc_json_n(g_version);
+                    p += "\",\"website\":\"";                      p += poc_json_n(w_to_utf8(hp));
+                    p += "\",\"logs\":\"";                         p += poc_json_n(logs);
+                    p += "\"}";
+                    if (p.size() <= REPORT_PAYLOAD_CAP) {
+                        g_report_payload.swap(p);
+                        g_report_is_crash = true;
+                        g_report_inflight = true;
+                        HANDLE h = CreateThread(nullptr, 0, report_thread, nullptr, 0, nullptr);
+                        if (h) CloseHandle(h);
+                        else {
+                            g_report_inflight = false; g_report_is_crash = false;
+                            poc_post_json(L"{\"kind\":\"reportResult\",\"ok\":false}");
+                        }
+                    } else poc_post_json(L"{\"kind\":\"reportResult\",\"ok\":false}");
+                }
+            } else if (cmd == L"crashDismiss") {
+                /* dismiss = handled: clear the pending records so the dialog never nags twice. The
+                 * full logs + any crash dump stay on disk untouched. */
+                crash_clear_pending();
             } else if (cmd == L"winMin") {
                 ShowWindow(g_hwnd, SW_MINIMIZE);
             } else if (cmd == L"winMax") {
@@ -1618,7 +1789,12 @@ static HRESULT on_message(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventA
     }
     return S_OK;
 }
-static HRESULT on_nav_completed(ICoreWebView2 *, ICoreWebView2NavigationCompletedEventArgs *) { poc_send_list(); return S_OK; }
+static HRESULT on_nav_completed(ICoreWebView2 *, ICoreWebView2NavigationCompletedEventArgs *)
+{
+    g_page_loaded = true;   /* the page can receive posted messages from here on (crash poll gates on this) */
+    poc_send_list();
+    return S_OK;
+}
 static HRESULT on_controller_created(HRESULT result, ICoreWebView2Controller *controller)
 {
     if (FAILED(result) || !controller) { poc_logf("controller creation FAILED hr=0x%08lx", (unsigned long)result); return result; }
@@ -1768,13 +1944,42 @@ static void poc_think_loop()
             poc_post_json(m.c_str());
             if (g_move_prefab_result == 1) poc_send_prefabs();
         }
-        if (g_report_done) {   /* feedback POST finished on its worker thread -- relay the result */
+        if (g_report_done) {   /* feedback/crash POST finished on its worker thread -- relay the result */
             g_report_done = false;
             std::wstring m = L"{\"kind\":\"reportResult\",\"ok\":"; m += g_report_ok ? L"true" : L"false";
             m += L",\"mode\":\""; m += poc_json_w(g_report_mode);
             m += L"\",\"number\":"; m += std::to_wstring(g_report_number); m += L"}";
             poc_post_json(m.c_str());
+            if (g_report_is_crash) {
+                /* a successfully-sent crash report is handled -- clear the pending records (same as
+                 * Dismiss); a failed send keeps them, so the dialog can retry / reappear next launch. */
+                if (g_report_ok) { crash_clear_pending(); g_crash_last_sent.clear(); }
+                g_report_is_crash = false;
+            }
             g_report_inflight = false;
+        }
+
+        /* crash-record poll (~2 s): announce the LATEST pending record to the page exactly once per
+         * record. Covers both timings with one mechanism -- records found at startup (the process died
+         * last session) and records appearing mid-session (a survived Class-B fault seconds ago). */
+        if (g_page_loaded && (frame == 1 || frame % 60 == 0)) {
+            std::string latest;
+            int cnt = crash_scan(latest);
+            if (cnt > 0 && latest != g_crash_last_sent) {
+                std::string rec = crash_read_record(latest);
+                if (!rec.empty()) {
+                    g_crash_last_sent = latest;
+                    std::string m = "{\"kind\":\"crashPending\",\"count\":" + std::to_string(cnt) +
+                                    ",\"record\":" + rec + "}";
+                    int wl = MultiByteToWideChar(CP_UTF8, 0, m.c_str(), -1, nullptr, 0);
+                    if (wl > 0) {
+                        std::wstring wm; wm.resize(wl - 1);
+                        if (wl > 1) MultiByteToWideChar(CP_UTF8, 0, m.c_str(), -1, &wm[0], wl);
+                        poc_post_json(wm.c_str());
+                        poc_logf("crash: pending record announced (count=%lu)", (unsigned long)cnt);
+                    }
+                }
+            }
         }
 
         if (g_webview_ready) {

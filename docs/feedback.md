@@ -1,8 +1,9 @@
 # Feedback pipeline
 
 How an in-app report becomes a tracked issue, end to end — and what keeps the tracker clean. The parts:
-the **dialog** (in the Studio UI), the **relay** (a Cloudflare Worker, [`feedback/`](../feedback/README.md)),
-and two **hygiene workflows** (GitHub Actions in this repo).
+the **dialogs** (in the Studio UI: the "?" feedback dialog, and the crash-report dialog below), the
+**relay** (a Cloudflare Worker, [`feedback/`](../feedback/README.md)), and two **hygiene workflows**
+(GitHub Actions in this repo).
 
 ```
 User clicks "?" -> Send-feedback dialog (category / title / details / optional contact)
@@ -38,6 +39,30 @@ this, on version …") instead of a duplicate — one issue with N confirmations
 resurrected (closed means resolved or rejected; a fresh report opens a fresh issue). Matching is exact
 by design; judging that two differently-worded reports are the same bug stays a maintainer call.
 
+## Crash reports
+
+The same pipeline's second producer. When the game hits a serious fault, the fault machinery writes a
+small **crash record** (JSON — fault class, exception code, `module+0xRVA`, call stack, the engine's own
+error message when there is one, timestamp, installed version) to `<game>\snaphak\crash\`, using
+crash-safe file writes only. The Studio UI polls that folder and auto-opens the **crash-report dialog**
+(branded header, same style as the main window): for a fault the editor *survived*, seconds after it
+happens; for a fault that killed the game, on the next launch ("Snapmap+ crashed last session"). Truly
+fatal classes also save a local crash dump (`snaphak\logs\snaphak_crash.dmp`) — it is never uploaded;
+an issue notes where it lives so a maintainer can ask for it.
+
+The dialog shows exactly what was recorded (the error + the call stack), takes an optional "what were
+you doing?" description and optional contact, and offers an **Attach recent logs** checkbox (on by
+default). Attached logs are the *tails* of the local log files, **anonymized before sending** — the
+Windows account name, profile-folder name, and machine name are scrubbed out (`<user>` / `<machine>`).
+Send files it through the relay as `category: crash`; Dismiss (or a successful send) clears the pending
+record so the dialog never nags twice — the full logs and any dump stay on disk untouched.
+
+What lands on the tracker: title `Crash: <module>+0x<rva> (0x<code>)` — the crash *location*, so the
+signature dedup groups every occurrence of the same crash onto one issue — labels `crash` +
+`user-report` + channel, a readable crash-summary body, and the attached logs as a **collapsed
+follow-up comment** (one per occurrence, each with its own logs). Repeat crashes therefore read as one
+issue with N dated confirmations, each carrying its own evidence.
+
 ## Tracker hygiene (the two workflows)
 
 Both are secretless (the built-in `GITHUB_TOKEN`, least-privilege `permissions:`), SHA-pinned like every
@@ -52,9 +77,10 @@ workflow here, and scoped to `user-report` issues — they never touch maintaine
   or `awaiting-response` (i.e. waiting on their reporter) get a warning after 21 quiet days and close
   14 days later. Confirmed bugs and feature requests never auto-close.
 
-Label glossary: `user-report` (relay-filed), `beta`/`stable` (reported channel), `needs-retest`
-(superseded by a release, awaiting confirmation), `awaiting-response` (maintainer asked the reporter a
-question — apply by hand to arm the stale sweep), `stale` (the sweep's warning marker).
+Label glossary: `user-report` (relay-filed), `crash` (filed by the crash-report dialog),
+`beta`/`stable` (reported channel), `needs-retest` (superseded by a release, awaiting confirmation),
+`awaiting-response` (maintainer asked the reporter a question — apply by hand to arm the stale sweep),
+`stale` (the sweep's warning marker).
 
 ## Failure modes
 
