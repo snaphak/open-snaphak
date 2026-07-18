@@ -70,7 +70,8 @@ async function appJwt(env) {
   const now = Math.floor(Date.now() / 1000);
   const enc = new TextEncoder();
   const head = b64u(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
-  const pay = b64u(enc.encode(JSON.stringify({ iat: now - 60, exp: now + 540, iss: String(env.APP_ID) })));
+  /* trim: a secret piped in via a shell often carries a trailing newline; GitHub rejects an iss with one */
+  const pay = b64u(enc.encode(JSON.stringify({ iat: now - 60, exp: now + 540, iss: String(env.APP_ID).trim() })));
   const pem = env.APP_PRIVATE_KEY.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
   const der = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
   const key = await crypto.subtle.importKey('pkcs8', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
@@ -81,11 +82,19 @@ async function authToken(env) {
   if (!(env.APP_ID && env.APP_PRIVATE_KEY)) return env.GITHUB_TOKEN || null;   // PAT fallback
   const now = Date.now() / 1000;
   if (tokenCache.token && now < tokenCache.exp - 120) return tokenCache.token;
-  const jwt = await appJwt(env);
-  const inst = await gh(jwt, '/repos/' + REPO + '/installation');   // which installation covers the repo
-  if (!inst || !inst.id) return null;
-  const tok = await gh(jwt, '/app/installations/' + inst.id + '/access_tokens', { method: 'POST' });
-  if (!tok || !tok.token) return null;
+  let jwt;
+  try { jwt = await appJwt(env); }
+  catch (e) { console.log('app auth: jwt build failed:', e.message); return null; }
+  const hdrs = {
+    'Authorization': 'Bearer ' + jwt, 'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'snaphak-feedback-relay',
+  };
+  const instRes = await fetch(API + '/repos/' + REPO + '/installation', { headers: hdrs });
+  if (!instRes.ok) { console.log('app auth: installation lookup ->', instRes.status, (await instRes.text()).slice(0, 200)); return null; }
+  const inst = await instRes.json();
+  const tokRes = await fetch(API + '/app/installations/' + inst.id + '/access_tokens', { method: 'POST', headers: hdrs });
+  if (!tokRes.ok) { console.log('app auth: token exchange ->', tokRes.status, (await tokRes.text()).slice(0, 200)); return null; }
+  const tok = await tokRes.json();
   tokenCache = { token: tok.token, exp: now + 3300 };   // installation tokens live ~1h
   return tok.token;
 }
