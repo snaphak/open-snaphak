@@ -88,8 +88,11 @@ A few practical notes:
   close it rather than failing cryptically.
 - If auto-detection can't find DOOM (a non-Steam copy, say), run it from a terminal instead and point
   it at the folder: `snaphak install --doom "C:\path\to\DOOM"`.
-- While Snapmap+ is in **beta**, the double-click flow may report that no release is available — run
-  `snaphak install --beta` from a terminal instead. This note disappears with the first stable release.
+- While Snapmap+ is in **beta**, the installer says "No stable release has been published yet" and
+  installs the newest beta automatically — nothing extra to do.
+- **Already installed?** Double-clicking `snaphak.exe` again shows your installed version, tells you
+  when a newer one is available (press Enter to update), and takes any command — `update`, `changelog`,
+  `uninstall`, `status` — right there, no terminal needed.
 - **Updating later:** run `snaphak update` — it updates both the overlay and `snaphak.exe` itself.
   You never need to re-download anything from the site.
 - **Uninstalling:** `snaphak uninstall` restores your DOOM folder to exactly what it was before.

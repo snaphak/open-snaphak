@@ -36,7 +36,8 @@ snaphak help
 - **`--release <tag>`** — install a specific release version instead of the latest.
 - **`--beta`** — install the latest **beta** (pre-release) instead of the latest stable.
 
-With no `--local`, `install`/`update` download from GitHub (the latest stable by default).
+With no `--local`, `install`/`update` download from GitHub — the latest stable by default; while no
+stable release has been published yet, they fall back to the newest beta (and say so).
 
 ## What it does
 
@@ -52,17 +53,20 @@ With no `--local`, `install`/`update` download from GitHub (the latest stable by
 ## Releases & channels
 
 `install` / `update` download from **`snaphak/open-snaphak`** releases. `snaphak.exe` installs itself to
-`%LOCALAPPDATA%\open-snaphak\` (with its `install.json` record); **double-clicking it** runs an interactive
-install (auto-detect DOOM → confirm → install).
+`%LOCALAPPDATA%\open-snaphak\` (with its `install.json` record); **double-clicking it** (no args) opens a
+status-aware interactive prompt: not installed → Enter installs (auto-detect DOOM → confirm); installed
+with a newer release out → an update notice, Enter updates; and a `snaphak>` prompt takes every command
+above (with flags), so update / uninstall / changelog work without a terminal or PATH. `update` also
+refreshes `snaphak.exe` itself (skip with `--no-self`).
 
 - **Stable** (`snaphak update`): the latest plain `vX.Y.Z` release.
 - **Beta**: a `vX.Y.Z-beta.N` pre-release — `snaphak update --beta` (latest beta) or
   `snaphak install --release <tag>` (a specific one).
 - Pin any version with `--release <tag>` on install/update.
 
-### Private (closed-beta) access
+### Private-repo access (not needed while the repo is public)
 
-While the release repo is private, downloading a release needs a GitHub token. Save one once:
+If the release repo is private (e.g. a closed beta), downloading a release needs a GitHub token. Save one once:
 
 ```
 snaphak set-token <github-token>      # stored in %LOCALAPPDATA%\open-snaphak\token
