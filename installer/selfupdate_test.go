@@ -63,3 +63,72 @@ func TestReplaceExeRollbackOnMissingNew(t *testing.T) {
 		t.Error("a failed replace should leave no .old behind")
 	}
 }
+
+// TestReplaceExeStaleOldIsCleared: an unlocked leftover .old from a past run is simply replaced.
+func TestReplaceExeStaleOldIsCleared(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "snaphak.exe")
+	writeF(t, path, "OLD")
+	writeF(t, path+".old", "STALE")
+	newExe := filepath.Join(tmp, "new", "snaphak.exe")
+	writeF(t, newExe, "NEW")
+
+	if err := replaceExe(path, newExe); err != nil {
+		t.Fatalf("replaceExe: %v", err)
+	}
+	if got := readF(t, path); got != "NEW" {
+		t.Errorf("after replace, exe = %q, want NEW", got)
+	}
+	if got := readF(t, path+".old"); got != "OLD" {
+		t.Errorf(".old should hold the just-replaced exe, got %q", got)
+	}
+}
+
+// TestRemoveOldLeftoversSweepsAllSuffixes: startup cleanup removes .old AND any .old<N> fallback names,
+// and touches nothing else.
+func TestRemoveOldLeftoversSweepsAllSuffixes(t *testing.T) {
+	tmp := t.TempDir()
+	exe := filepath.Join(tmp, "snaphak.exe")
+	writeF(t, exe, "CURRENT")
+	writeF(t, exe+".old", "a")
+	writeF(t, exe+".old2", "b")
+	writeF(t, exe+".old3", "c")
+	writeF(t, filepath.Join(tmp, "other.dat"), "keep")
+
+	removeOldLeftovers(exe)
+
+	for _, gone := range []string{exe + ".old", exe + ".old2", exe + ".old3"} {
+		if exists(gone) {
+			t.Errorf("%s still present, want removed", filepath.Base(gone))
+		}
+	}
+	if got := readF(t, exe); got != "CURRENT" {
+		t.Errorf("exe touched by the sweep: %q", got)
+	}
+	if got := readF(t, filepath.Join(tmp, "other.dat")); got != "keep" {
+		t.Errorf("unrelated file touched by the sweep: %q", got)
+	}
+}
+
+// sha256("abc"), the standard test vector.
+const abcSHA256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+// TestAssetMatchesFile: the on-disk-already-current check that stops a session from re-downloading and
+// re-replacing an exe that a previous run already updated.
+func TestAssetMatchesFile(t *testing.T) {
+	tmp := t.TempDir()
+	p := filepath.Join(tmp, "f")
+	writeF(t, p, "abc")
+	if !assetMatchesFile(&ghAsset{Digest: "sha256:" + abcSHA256}, p) {
+		t.Error("matching digest not recognized")
+	}
+	if assetMatchesFile(&ghAsset{Digest: "sha256:" + abcSHA256}, filepath.Join(tmp, "missing")) {
+		t.Error("missing file reported as matching")
+	}
+	if assetMatchesFile(&ghAsset{Digest: ""}, p) {
+		t.Error("empty digest must not match (must fall through to the download path)")
+	}
+	if assetMatchesFile(&ghAsset{Digest: "sha256:deadbeef"}, p) {
+		t.Error("wrong digest reported as matching")
+	}
+}

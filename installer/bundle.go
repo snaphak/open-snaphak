@@ -127,6 +127,7 @@ type ghAsset struct {
 	Name               string `json:"name"`
 	URL                string `json:"url"`                  // API URL (token-authed private download)
 	BrowserDownloadURL string `json:"browser_download_url"` // public URL
+	Digest             string `json:"digest"`               // "sha256:<hex>" (may be empty)
 }
 
 // downloadRelease resolves the requested release (stable / --beta pre-release / --release tag), downloads
