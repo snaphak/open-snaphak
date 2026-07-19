@@ -174,7 +174,25 @@ func cmdInstall(f flags) error {
 	if err := saveRecord(rec); err != nil {
 		return fmt.Errorf("installed the files, but couldn't write the install record (%v) -- uninstall may not fully clean up", err)
 	}
-	migrateLegacyLogs(doom) // runtime logs live in snapmap-plus\logs\ -- fold an older install's root-level snaphak_logs\ in (best-effort)
+	// Remove what a PRIOR install of OURS placed that this one no longer does -- notably a renamed overlay
+	// (the old snaphak\snaphakui.dll, superseded by snapmap-plus\snapmap-plus-ui.dll). These paths come from
+	// our OWN prior install record, so they are always ours to remove (never the original SnapHak's files).
+	for rel := range ours {
+		placed := false
+		for _, r := range rec.Files {
+			if r == rel {
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			if os.Remove(filepath.Join(doom, rel)) == nil {
+				fmt.Printf("  - removed superseded %s\n", rel)
+			}
+			removeIfEmpty(filepath.Dir(filepath.Join(doom, rel)))
+		}
+	}
+	migrateLegacyLogs(doom) // runtime logs live in snapmap-plus\logs\ -- fold older locations (snaphak_logs\, snaphak\logs\) in (best-effort)
 	migrateUserData()       // scaffold the app-data content tree + fold a user's old %USERPROFILE%\snaphak\ content forward (best-effort)
 	fmt.Printf("Done. Snapmap+ %s installed.\n", rec.Version)
 	ensureWebView2Runtime(f) // the HTML UI renders in the WebView2 runtime -- ensure it's present (never fails the install)
@@ -182,20 +200,28 @@ func cmdInstall(f flags) error {
 	return nil
 }
 
-// migrateLegacyLogs folds a pre-existing root-level snaphak_logs\ (where runtime logs lived in the
-// oldest releases) into the current location, so an update doesn't strand old logs in a dir
-// nothing writes to anymore. Best-effort: a file that won't move (locked, name collision) stays behind
-// and the old dir is then left in place; never fails the install.
+// migrateLegacyLogs folds runtime logs from older locations -- the oldest releases' root-level snaphak_logs\,
+// and the previous-name overlay's snaphak\logs\ -- into the current snapmap-plus\logs\, so an update doesn't
+// strand old logs in a dir nothing writes to anymore, then drops the emptied old overlay dir. Best-effort: a
+// file that won't move (locked, name collision) stays behind and its dir is left in place; never fails install.
 func migrateLegacyLogs(doom string) {
-	old := filepath.Join(doom, "snaphak_logs")
+	newDir := filepath.Join(doom, "snapmap-plus", "logs")
+	foldLogsForward(filepath.Join(doom, "snaphak_logs"), newDir)
+	foldLogsForward(filepath.Join(doom, "snaphak", "logs"), newDir)
+	removeIfEmpty(filepath.Join(doom, "snaphak")) // the previous-name overlay dir, once its DLL + logs are gone
+}
+
+// foldLogsForward moves every file in old into newDir (keeping any that already exist there), then removes old
+// if it ends up empty. Best-effort.
+func foldLogsForward(old, newDir string) {
 	entries, err := os.ReadDir(old)
 	if err != nil {
 		return // nothing to migrate
 	}
-	newDir := filepath.Join(doom, "snapmap-plus", "logs")
 	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		return
 	}
+	moved := false
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -204,11 +230,15 @@ func migrateLegacyLogs(doom string) {
 		if _, err := os.Stat(dst); err == nil {
 			continue // already exists at the new location -- keep it, leave the old copy
 		}
-		os.Rename(filepath.Join(old, e.Name()), dst)
+		if os.Rename(filepath.Join(old, e.Name()), dst) == nil {
+			moved = true
+		}
 	}
 	if rest, err := os.ReadDir(old); err == nil && len(rest) == 0 {
 		os.Remove(old)
-		fmt.Println("  ~ moved runtime logs into snapmap-plus\\logs\\")
+		if moved {
+			fmt.Println("  ~ moved runtime logs into snapmap-plus\\logs\\")
+		}
 	}
 }
 

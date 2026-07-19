@@ -46,8 +46,10 @@ func TestMigrateUserData_foldsOldContentForward(t *testing.T) {
 	if err != nil || string(got) != "MY OVERRIDE" {
 		t.Fatalf("content not migrated to the new location: %q, %v", got, err)
 	}
-	if _, err := os.Stat(oldOverride); err != nil {
-		t.Errorf("the old folder should be left intact as a backup, but the file is gone: %v", err)
+	// It's a VERIFIED MOVE: once every file is mirrored at the new location, the old home-root folder is
+	// removed (not left as a stale backup).
+	if _, err := os.Stat(filepath.Join(up, "snaphak")); !os.IsNotExist(err) {
+		t.Errorf("the old %%USERPROFILE%%\\snaphak folder should be removed after a full migration, but it still exists")
 	}
 }
 

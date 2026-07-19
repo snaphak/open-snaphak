@@ -61,10 +61,12 @@ func ensureUserDataTree() {
 	}
 }
 
-// migrateUserData scaffolds the content tree and, one time, folds a user's existing content forward from the
-// old home-root %USERPROFILE%\snaphak\ folder into the app-data dir. Copy-not-move: the old folder is left
-// untouched as a backup, and a file already present at the destination is never overwritten -- so this is
-// idempotent (a re-run copies nothing) and never clobbers newer content. Best-effort; never fails the install.
+// migrateUserData scaffolds the content tree and, one time, MOVES a user's existing content forward from the
+// old home-root %USERPROFILE%\snaphak\ folder into the app-data dir: it copies every missing file, then removes
+// the old folder once every one of its files is confirmed present at the new location. That's a VERIFIED move --
+// the delete only happens after the content is safely mirrored, so nothing is ever lost, but no stale "backup"
+// is left behind either. It also clears the pre-rename %LOCALAPPDATA%\open-snaphak\ app-data folder once its
+// record/token have migrated forward. Best-effort; never fails the install; never deletes an unmirrored folder.
 func migrateUserData() {
 	dir := appDataDir()
 	if dir == "" {
@@ -72,14 +74,57 @@ func migrateUserData() {
 	}
 	ensureUserDataTree()
 
-	old := oldUserContentDir()
-	if old == "" || sameFile(old, dir) {
-		return
+	// 1) User content: %USERPROFILE%\snaphak -> the app-data dir, then remove the old folder if fully mirrored.
+	if old := oldUserContentDir(); old != "" && !sameFile(old, dir) {
+		if _, err := os.Stat(old); err == nil {
+			copyTreeMissing(old, dir)
+			if fullyMirrored(old, dir) {
+				if os.RemoveAll(old) == nil {
+					fmt.Printf("  ~ moved your saved content (overrides / prefabs / rawmaps) to %s\n", dir)
+				}
+			} else {
+				fmt.Printf("  ~ copied your content to %s -- kept %s (some files could not be verified)\n", dir, old)
+			}
+		}
 	}
-	if n := copyTreeMissing(old, dir); n > 0 {
-		fmt.Printf("  ~ copied your saved content (overrides / prefabs) into the new location (%d file(s)).\n", n)
-		fmt.Printf("    It now lives in %s; your old folder was left untouched as a backup.\n", dir)
+
+	// 2) Old app-data folder (%LOCALAPPDATA%\open-snaphak): the record + token migrate forward lazily via
+	//    loadRecord / resolveToken; make sure both are present at the new location, then delete the old folder
+	//    (its stale exe copy goes with it).
+	if oldAD := oldAppDataDir(); oldAD != "" && !sameFile(oldAD, dir) {
+		if _, err := os.Stat(oldAD); err == nil {
+			for _, name := range []string{"install.json", "token"} {
+				s, t := filepath.Join(oldAD, name), filepath.Join(dir, name)
+				if _, e := os.Stat(t); e != nil {
+					if _, e := os.Stat(s); e == nil {
+						copyFile(s, t)
+					}
+				}
+			}
+			os.RemoveAll(oldAD)
+		}
 	}
+}
+
+// fullyMirrored reports whether every file under src also exists under dst -- the safety check that lets a
+// migration delete src without risking data loss.
+func fullyMirrored(src, dst string) bool {
+	ok := true
+	filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(src, path)
+		if rerr != nil {
+			ok = false
+			return nil
+		}
+		if _, e := os.Stat(filepath.Join(dst, rel)); e != nil {
+			ok = false
+		}
+		return nil
+	})
+	return ok
 }
 
 // copyTreeMissing recursively copies every file under src into dst, preserving the relative layout, but only
