@@ -38,12 +38,23 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\build.ps1
           .\package.ps1
-      - name: Build installer (version-stamped)
+      - name: Build installer (version-stamped, with version resource + manifest)
         shell: pwsh
         working-directory: installer
         run: |
-          go build -ldflags "-X main.version=${{ github.ref_name }}" -o ..\dist\snaphak.exe .
+          # build.ps1 embeds the Windows version resource + application manifest, strips symbols, and
+          # trims local build paths (the free antivirus-false-positive mitigations), then stamps the tag.
+          # Same recipe as a local dev build, so what ships is shaped exactly like what is tested.
+          .\build.ps1 -Version "${{ github.ref_name }}" -Out ..\dist\snaphak.exe
           if ($LASTEXITCODE -ne 0) { throw "installer build failed" }
+
+      # --- Authenticode code signing slots in HERE (the strongest antivirus / SmartScreen lever) ---
+      # A signed dist\snaphak.exe (and, ideally, the two DLLs in dist\) clears the "unknown publisher"
+      # SmartScreen prompt and sharply lowers heuristic AV scores on the direct download. The signing
+      # step is added once a signing identity is chosen + its credential is stored as a repo secret
+      # (e.g. Azure Trusted Signing via azure/trusted-signing-action, or signtool with a PFX/EV token).
+      # It must run AFTER this build and BEFORE the zip + provenance attestation below, so the attested
+      # bytes are the signed bytes.
       - name: Zip the overlay
         shell: pwsh
         run: |
