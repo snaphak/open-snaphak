@@ -1,8 +1,0 @@
-# GitHub Pages (Jekyll) config for the Snapmap+ site.
-# The site is docs/: index.html is served verbatim; snapmap-plus-guide.md is rendered
-# through _layouts/guide.html (its front matter picks the layout). One source for the guide.
-title: Snapmap+
-description: Snapmap+ opens up DOOM (2016) SnapMap — full property editing, no editor limits.
-markdown: kramdown
-kramdown:
-  input: GFM

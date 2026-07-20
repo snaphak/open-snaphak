@@ -21,7 +21,8 @@ research; the third-party runtime it links against (the DOOM engine, Microsoft's
 | `build.ps1` | compile the DLLs → `build/` (backend + frontend; `-BackendOnly` skips the frontend) |
 | `package.ps1` | assemble the deployable overlay → `dist/` (the two clone DLLs) |
 | `installer/` | `snapmap-plus.exe` — the end-user install / update / uninstall CLI (Go) |
-| `docs/` | architecture · capabilities · fidelity · packaging · webview-ui · backend-changes |
+| `docs/` | contributor documentation: architecture · capabilities · fidelity · packaging · webview-ui · backend-changes |
+| `site/` | the website ([doom-snapmap.github.io/snapmap-plus](https://doom-snapmap.github.io/snapmap-plus/)) — deployed by `.github/workflows/pages.yml` |
 
 `build/` and `dist/` are gitignored — the **source is the deliverable**; the binaries are rebuilt.
 

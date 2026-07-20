@@ -5,28 +5,6 @@ title: Guide to Snapmap+
 
 # Guide to Snapmap+
 
-## Table of Contents
-
-- [What is Snapmap+](#what-is-snapmap)
-- [Installing Snapmap+](#installing-snapmap)
-- [Opening Snapmap+](#opening-snapmap)
-- [The Entities Tab](#the-entities-tab)
-- [The Entity State Panel](#the-entity-state-panel)
-- [Understanding the Decl Format](#understanding-the-decl-format)
-- [Common Properties](#common-properties)
-- [Reclassing an Entity](#reclassing-an-entity)
-- [The Custom Palette Tab](#the-custom-palette-tab)
-- [Targets and Logic Signaling](#targets-and-logic-signaling)
-- [The Prefabs Tab](#the-prefabs-tab)
-- [The Timelines Tab](#the-timelines-tab)
-- [Rawmaps](#rawmaps)
-- [SnapStack (Bulk Editing)](#snapstack-bulk-editing)
-- [Overrides](#overrides)
-- [Advanced: Every Console Command](#advanced-every-console-command)
-- [Reporting Bugs and Requesting Features](#reporting-bugs-and-requesting-features)
-
----
-
 ## What is Snapmap+
 
 Snapmap+ is a tool that reads and writes a DOOM (2016) SnapMap file directly, instead of going through

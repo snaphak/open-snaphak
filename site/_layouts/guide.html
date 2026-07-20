@@ -5,9 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ page.title }} — Snapmap+</title>
 <meta name="description" content="{{ page.description | default: 'The full Snapmap+ user guide: installing, the UI tour, decl editing, reclassing, timelines, prefabs, and bulk editing for DOOM (2016) SnapMap.' }}">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
@@ -15,28 +16,40 @@
 <header class="site-header">
   <div class="wrap">
     <a class="wordmark" href="./">Snapmap<span class="plus">+</span></a>
-    <nav class="navlinks">
-      <a href="./">Home</a>
-      <a href="https://github.com/doom-snapmap/snapmap-plus/releases">Changelog</a>
-      <a href="https://github.com/doom-snapmap/snapmap-plus">GitHub</a>
+    <nav aria-label="Site">
+      <div class="navlinks">
+        <a href="./">Home</a>
+        <a href="snapmap-plus-guide.html">Guide</a>
+        <a href="changelog.html">Changelog</a>
+        <a href="https://github.com/doom-snapmap/snapmap-plus">GitHub</a>
+      </div>
+      <a class="btn-nav" data-dl href="https://github.com/doom-snapmap/snapmap-plus/releases">Download</a>
     </nav>
   </div>
 </header>
-<div class="hazard"></div>
 
-<main class="guide-doc">
+<main>
   <div class="wrap">
-    {{ content }}
+    <div class="guide-shell">
+      <aside class="guide-toc" aria-label="On this page">
+        <details id="guide-toc-details" open>
+          <summary class="guide-toc-title">On this page</summary>
+          <ol id="guide-toc-list"></ol>
+        </details>
+      </aside>
+      <article class="guide-doc">
+        {{ content }}
+      </article>
+    </div>
   </div>
 </main>
 
-<div class="hazard"></div>
 <footer class="site-footer">
   <div class="wrap">
     <div class="footer-links">
       <a href="./">Home</a>
       <a href="snapmap-plus-guide.html">Guide</a>
-      <a href="https://github.com/doom-snapmap/snapmap-plus/releases">Release notes</a>
+      <a href="changelog.html">Changelog</a>
       <a href="https://github.com/doom-snapmap/snapmap-plus">Source on GitHub</a>
       <a href="privacy.html">Privacy policy</a>
       <a href="./#code-signing">Code signing policy</a>
@@ -48,5 +61,6 @@
   </div>
 </footer>
 
+<script src="assets/site.js" defer></script>
 </body>
 </html>

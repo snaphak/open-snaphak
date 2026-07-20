@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snapmap+ — the DOOM (2016) SnapMap editor, unchained</title>
+<meta name="description" content="Snapmap+ is a free, open-source mod for DOOM (2016) SnapMap: edit every entity property, bypass editor limits, and place anything in the engine — while your maps stay playable for everyone, consoles included.">
+<meta name="keywords" content="Snapmap+, snapmap plus, DOOM 2016, DOOM SnapMap, SnapMap editor, DOOM mod, DOOM modding, snapmap mod, snapmap-plus, level editor">
+<meta name="author" content="Snapmap+ contributors">
+<link rel="canonical" href="https://doom-snapmap.github.io/snapmap-plus/">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Snapmap+">
+<meta property="og:title" content="Snapmap+ — the DOOM (2016) SnapMap editor, unchained">
+<meta property="og:description" content="A free, open-source mod that opens up DOOM (2016) SnapMap: full decl editing, no editor limits, anything the engine knows is placeable — and maps stay playable for everyone.">
+<meta property="og:url" content="https://doom-snapmap.github.io/snapmap-plus/">
+<meta property="og:image" content="https://doom-snapmap.github.io/snapmap-plus/images/snapmap-window-and-doom.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Snapmap+ — the DOOM (2016) SnapMap editor, unchained">
+<meta name="twitter:description" content="A free, open-source mod that opens up DOOM (2016) SnapMap — full decl editing, no editor limits, maps stay playable for everyone.">
+<meta name="twitter:image" content="https://doom-snapmap.github.io/snapmap-plus/images/snapmap-window-and-doom.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="wordmark" href="./">Snapmap<span class="plus">+</span></a>
+    <nav aria-label="Site">
+      <div class="navlinks">
+        <a href="snapmap-plus-guide.html">Guide</a>
+        <a href="changelog.html">Changelog</a>
+        <a href="https://github.com/doom-snapmap/snapmap-plus">GitHub</a>
+      </div>
+      <a class="btn-nav" data-dl href="https://github.com/doom-snapmap/snapmap-plus/releases">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <span class="kicker">For DOOM (2016) SnapMap</span>
+          <h1>The SnapMap editor, <em>unchained</em>.</h1>
+          <p class="lede">
+            Edit every property the engine knows. Bypass the stock editor's size, name, and palette
+            limits. Place entities SnapMap was never built to expose. Your maps stay fully playable
+            for everyone &mdash; console players included, nothing to install on their end.
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-primary" data-dl href="https://github.com/doom-snapmap/snapmap-plus/releases">
+              &#8595; Download snapmap-plus.exe
+            </a>
+            <a class="btn btn-ghost" href="snapmap-plus-guide.html">Read the guide</a>
+          </div>
+          <p class="dl-meta">
+            <span id="dl-version">latest release</span><span class="beta-pill" id="beta-pill">Beta</span>
+            <span class="sep">&middot;</span> Windows
+            <span class="sep">&middot;</span> free &amp; open source (MIT)
+            <span class="sep">&middot;</span> self-updating &mdash; download once
+          </p>
+        </div>
+
+        <!-- The signature: a SnapMap logic graph. Output chip -> Snapmap+ -> everything opens. -->
+        <div class="hero-graph" aria-hidden="false">
+          <svg viewBox="0 0 620 430" role="img"
+               aria-label="A SnapMap-style logic diagram: a Player node's On Spawned output wired into a Snapmap+ node, which wires out to Every Property, Place Anything, and No Limits.">
+            <!-- wires -->
+            <path id="wire-a" class="wire-path" pathLength="1" d="M 212 76 C 236 76, 224 214, 248 214"/>
+            <path id="wire-b1" class="wire-path wire-b" pathLength="1" d="M 412 214 C 434 214, 426 78, 448 78"/>
+            <path id="wire-b2" class="wire-path wire-b" pathLength="1" d="M 412 214 L 448 214"/>
+            <path id="wire-b3" class="wire-path wire-b" pathLength="1" d="M 412 214 C 434 214, 426 350, 448 350"/>
+
+            <!-- node: PLAYER (output chip) -->
+            <g>
+              <path class="chip" d="M 26 48 H 212 V 102 L 202 112 H 16 V 58 Z"/>
+              <text class="node-title" x="34" y="76">PLAYER</text>
+              <text class="node-sub" x="34" y="95">OUTPUT &#183; ON SPAWNED</text>
+              <rect class="port" x="204" y="72" width="8" height="8"/>
+            </g>
+
+            <!-- node: SNAPMAP+ (the hot chip) -->
+            <g class="g-hot">
+              <path class="chip chip-hot" d="M 262 180 H 408 V 238 L 398 248 H 252 V 190 Z"/>
+              <text class="node-title node-title-hot" x="272" y="210">SNAPMAP+</text>
+              <text class="node-sub" x="272" y="229">ACTION &#183; UNLOCK</text>
+              <rect class="port port-hot" x="244" y="210" width="8" height="8"/>
+              <rect class="port port-hot" x="408" y="210" width="8" height="8"/>
+            </g>
+
+            <!-- nodes: what opens up -->
+            <g>
+              <path class="chip" d="M 460 52 H 604 V 96 L 596 104 H 452 V 60 Z"/>
+              <text class="node-title" x="468" y="84">EVERY PROPERTY</text>
+              <rect class="port" x="444" y="74" width="8" height="8"/>
+            </g>
+            <g>
+              <path class="chip" d="M 460 188 H 604 V 232 L 596 240 H 452 V 196 Z"/>
+              <text class="node-title" x="468" y="220">PLACE ANYTHING</text>
+              <rect class="port" x="444" y="210" width="8" height="8"/>
+            </g>
+            <g>
+              <path class="chip" d="M 460 324 H 604 V 368 L 596 376 H 452 V 332 Z"/>
+              <text class="node-title" x="468" y="356">NO LIMITS</text>
+              <rect class="port" x="444" y="346" width="8" height="8"/>
+            </g>
+
+            <!-- signal pulses travelling the wires -->
+            <circle class="pulse" r="3.5">
+              <animateMotion dur="1.8s" begin="1.6s" repeatCount="indefinite">
+                <mpath href="#wire-a"/>
+              </animateMotion>
+            </circle>
+            <circle class="pulse" r="3.5">
+              <animateMotion dur="1.4s" begin="2.5s" repeatCount="indefinite">
+                <mpath href="#wire-b1"/>
+              </animateMotion>
+            </circle>
+            <circle class="pulse" r="3.5">
+              <animateMotion dur="1.4s" begin="2.9s" repeatCount="indefinite">
+                <mpath href="#wire-b2"/>
+              </animateMotion>
+            </circle>
+            <circle class="pulse" r="3.5">
+              <animateMotion dur="1.4s" begin="3.3s" repeatCount="indefinite">
+                <mpath href="#wire-b3"/>
+              </animateMotion>
+            </circle>
+          </svg>
+        </div>
+      </div>
+
+      <figure class="shot hero-shot">
+        <img src="images/snapmap-window-and-doom.jpg" alt="The Snapmap+ window next to the DOOM SnapMap editor" loading="eager">
+        <figcaption>Snapmap+ running alongside the SnapMap editor &mdash; live entity list, full decl editing.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="features" class="deck">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="node-port" aria-hidden="true"></span><span class="node-wire" aria-hidden="true"></span>
+        <h2 class="section-title">What it opens up</h2>
+      </div>
+      <p class="section-sub">
+        Snapmap+ reads and writes the map data itself instead of going through the stock editor's
+        menus &mdash; so the editor's guardrails simply don't apply.
+      </p>
+
+      <div class="feature-row">
+        <div class="feature-copy">
+          <h3>See every property. Edit every property.</h3>
+          <p>
+            Entities carry far more fields than SnapMap's Properties menu shows. Snapmap+ puts the
+            whole definition in front of you &mdash; and name-length caps, max sizes, fixed texture
+            and model pickers are UI limits, not engine rules. Scale past the max. Apply any material.
+          </p>
+          <ul class="feature-points">
+            <li>Syntax-colored editor with a live problem checker</li>
+            <li>Focus mode for long definitions</li>
+            <li>Reclass an entity into anything compatible</li>
+          </ul>
+        </div>
+        <figure class="shot">
+          <img src="images/window-tour.png" alt="The Snapmap+ window: the map's full entity list beside a syntax-colored property editor" loading="lazy">
+          <figcaption>Every entity in the map, live &mdash; filter, select, edit.</figcaption>
+        </figure>
+      </div>
+
+      <div class="feature-row flip">
+        <div class="feature-copy">
+          <h3>Place what the palette never showed you.</h3>
+          <p>
+            The engine has entity types SnapMap's palette never exposed. Snapmap+ reveals them in a
+            <code>*Custom</code> tab inside DOOM's own Create menu &mdash; you place them exactly the
+            way you place everything else, and the game does the rest.
+          </p>
+          <ul class="feature-points">
+            <li>Hidden and campaign-only entities, drag-placeable</li>
+            <li>Ships in DOOM's native Create menu, not a bolt-on</li>
+            <li>Spawn any entity definition by name from the console</li>
+          </ul>
+        </div>
+        <figure class="shot">
+          <img src="images/custom-palette-tab.jpg" alt="The *Custom palette tab inside DOOM's Create menu" loading="lazy">
+          <figcaption>The <code>*Custom</code> tab, right inside DOOM's own Create menu.</figcaption>
+        </figure>
+      </div>
+
+      <div class="feature-row">
+        <div class="feature-copy">
+          <h3>Direct your map like a stage play.</h3>
+          <p>
+            Timelines are the engine's most powerful scripting entity &mdash; multiple actions on
+            multiple entities with staggered timing &mdash; and the stock editor barely lets you
+            touch them. Snapmap+ gives them a dedicated visual editor with typed fields.
+          </p>
+          <ul class="feature-points">
+            <li>Sequence events across any entities, on the clock</li>
+            <li>Typed argument fields &mdash; no guessing at formats</li>
+            <li>Prefabs: save a rig once, paste it into any map, share it as a file</li>
+          </ul>
+        </div>
+        <figure class="shot">
+          <img src="images/timelines-tab.png" alt="The Timelines tab editing entity events and eventcalls" loading="lazy">
+          <figcaption>The Timeline editor: entity events and eventcalls with typed fields.</figcaption>
+        </figure>
+      </div>
+
+      <div class="console">
+        <div class="console-bar">Snapmap+ console &mdash; 29 commands &middot; 10 cvars</div>
+        <div class="console-body">
+<div class="ln"><span class="prompt">&gt;</span> <span class="cmd">sh_spawn</span> &lt;entitydef&gt;      <span class="out">spawn any entity the engine knows, right at the player</span></div>
+<div class="ln"><span class="prompt">&gt;</span> <span class="cmd">sh_target_any</span>           <span class="out">reveal the normally-hidden placeable decls in the palette</span></div>
+<div class="ln"><span class="prompt">&gt;</span> <span class="cmd">bss</span> / <span class="cmd">bsi</span> / <span class="cmd">bsf</span>         <span class="out">bulk-set a property across every stacked entity at once</span></div>
+<div class="ln"><span class="prompt">&gt;</span> <span class="cmd">sh_type</span> idPlayer -v     <span class="out">runtime class introspection &mdash; fields, offsets, enums</span></div>
+<div class="ln"><span class="prompt">&gt;</span> <span class="cmd">sh_help</span>                 <span class="out">every command and cvar, described in one place</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="get-started">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="node-port" aria-hidden="true"></span><span class="node-wire" aria-hidden="true"></span>
+        <h2 class="section-title">Up and running in three steps</h2>
+      </div>
+      <p class="section-sub">One small file. It installs, updates, and uninstalls itself &mdash; and restores vanilla exactly.</p>
+      <div class="steps">
+        <div class="step">
+          <h3>Download</h3>
+          <p>Grab <code>snapmap-plus.exe</code> with the button above. It keeps itself and Snapmap+ up to date from then on.</p>
+        </div>
+        <div class="step">
+          <h3>Double-click it</h3>
+          <p>The installer finds your DOOM 2016 install automatically, asks you to confirm, and places two files. Still have the original SnapHak in there? It cleans that out for you &mdash; your maps and prefabs carry over.</p>
+        </div>
+        <div class="step">
+          <h3>Open SnapMap</h3>
+          <p>Launch DOOM, open a map in the SnapMap editor &mdash; the Snapmap+ window appears alongside the game. Alt+Tab over and start editing.</p>
+        </div>
+      </div>
+      <p class="compat-note">
+        <strong>Heads-up:</strong> Snapmap+ currently targets the DOOM build from before the April 2024 patch
+        &mdash; a one-time depot download puts you on it, and online map publishing still works.
+        The <a href="snapmap-plus-guide.html#installing-snapmap">install section of the guide</a> walks through it.
+      </p>
+    </div>
+  </section>
+
+  <section id="shots" class="deck">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="node-port" aria-hidden="true"></span><span class="node-wire" aria-hidden="true"></span>
+        <h2 class="section-title">In action</h2>
+      </div>
+      <p class="section-sub">Click any screenshot to focus it.</p>
+      <div class="gallery">
+        <figure class="shot">
+          <img src="images/focus-mode.png" alt="Focus mode: the decl editor filling the window" loading="lazy">
+          <figcaption>Focus mode &mdash; distraction-free editing of a long decl.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/entity-state-panel.png" alt="The Entity State panel showing class, inherit, and display name fields" loading="lazy">
+          <figcaption>Entity State &mdash; class, inherit, and display name, editable live.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/prefabs-tab.png" alt="The Prefabs tab with saved entity groups organized in folders" loading="lazy">
+          <figcaption>Prefabs &mdash; save a group once, paste it anywhere, share it as a file.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/sh-target-any.jpg" alt="Hidden placeable entities revealed in the SnapMap palette by sh_target_any" loading="lazy">
+          <figcaption><code>sh_target_any</code> &mdash; the hidden half of the palette, revealed.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="community" class="community">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="node-port" aria-hidden="true"></span><span class="node-wire" aria-hidden="true"></span>
+        <h2 class="section-title">For the SnapMappers</h2>
+      </div>
+      <p class="big-line">
+        SnapMap gave a generation of DOOM fans their first level editor.
+        <em>This is our thank-you note.</em>
+      </p>
+      <p>
+        Snapmap+ is free, MIT-licensed, and built in the open as a recreation of the original
+        SnapHak tool. It collects nothing automatically &mdash; and when something breaks, the
+        <strong>?</strong> button files a report straight from the tool, so fixes land fast.
+      </p>
+      <p>
+        Everything you build stays standard SnapMap: publish your maps online and anyone can play
+        them &mdash; PC, PlayStation, or Xbox &mdash; with nothing to install.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-ghost" href="https://github.com/doom-snapmap/snapmap-plus">Star it on GitHub</a>
+        <a class="btn btn-ghost" href="https://github.com/doom-snapmap/snapmap-plus/blob/main/docs/contributing.md">Contribute</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-links">
+      <a href="snapmap-plus-guide.html">Guide</a>
+      <a href="changelog.html">Changelog</a>
+      <a href="https://github.com/doom-snapmap/snapmap-plus">Source on GitHub</a>
+      <a href="https://github.com/doom-snapmap/snapmap-plus/blob/main/LICENSE">MIT License</a>
+      <a href="privacy.html">Privacy policy</a>
+      <a href="#code-signing">Code signing policy</a>
+    </div>
+    <div id="code-signing">
+      <strong>Code signing policy.</strong> Free code signing provided by SignPath.io, certificate by SignPath Foundation.
+      Snapmap+'s Windows binaries &mdash; the <code>snapmap-plus.exe</code> installer and the two overlay DLLs &mdash; are
+      code-signed with a certificate held by SignPath Foundation, applied automatically in the GitHub Actions
+      release pipeline. Every release is built from source, with provenance verifiable via
+      <code>gh attestation verify --repo doom-snapmap/snapmap-plus</code>.
+    </div>
+    <div>
+      Snapmap+ is an open-source recreation, built from our own research, of the original
+      <strong>SnapHak</strong> tool. Not affiliated with id Software or Bethesda.
+      DOOM is a trademark of id Software LLC.
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js" defer></script>
+</body>
+</html>

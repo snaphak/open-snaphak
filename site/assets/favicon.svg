@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Snapmap+ mark: a chamfered logic chip carrying the argent plus -->
+  <path d="M14 4 H60 V50 L50 60 H4 V14 Z" fill="#0d131b" stroke="#243140" stroke-width="2"/>
+  <path d="M14 4 H30" stroke="#4ac9f0" stroke-width="4"/>
+  <path d="M4 14 V30" stroke="#4ac9f0" stroke-width="4"/>
+  <path d="M32 17 V47 M17 32 H47" stroke="#ff8a1e" stroke-width="10"/>
+</svg>
