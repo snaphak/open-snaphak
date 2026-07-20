@@ -62,7 +62,7 @@ separately. Until then, you'll need to run DOOM on the previous Steam depot:
 1. Press **Windows Key + R**, then enter `steam://nav/console` to open the Steam console.
 2. In the Steam console, run:
    ```
-   download_depot 379720 379721 2062496009391566631
+   download_depot 379720 379721 2206249600939156631
    ```
 3. Once it finishes, find the downloaded files under your Steam folder, typically:
    `C:\Program Files (x86)\Steam\steamapps\content\app_379720\depot_379721`
