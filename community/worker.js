@@ -51,6 +51,13 @@ const SITE_ORIGIN = 'https://doom-snapmap.github.io';
 const SITE_BASE = SITE_ORIGIN + '/snapmap-plus';
 const CLIENT_ID = 'Iv23liFSVvbqF4r8a2uK';   // public identifier of the snapmap-plus-community App
 
+/* The site's Community section is a knowledge base (how-to guides, tips, questions). These
+ * repo categories exist for other channels and never surface here -- not in the tabs, not in
+ * the composer, and posts filed under them stay off the site's lists. Creating a new category
+ * in repo settings (e.g. "How-To Guides", "Tips & Tricks") needs no code change: anything not
+ * on this list appears automatically. */
+const HIDDEN_CATEGORY_SLUGS = new Set(['announcements', 'polls', 'show-and-tell', 'general', 'ideas']);
+
 /* cache TTLs (seconds): categories change rarely; lists/posts should feel fresh */
 const TTL_CATEGORIES = 600;
 const TTL_LIST = 45;
@@ -194,16 +201,35 @@ query {
 }`;
 
 const Q_LIST = FRAG_AUTHOR + `
-query($first: Int!, $after: String, $categoryId: ID) {
+query($first: Int!, $after: String, $categoryId: ID, $orderField: DiscussionOrderField!) {
   repository(owner: "${REPO_OWNER}", name: "${REPO_NAME}") {
     discussions(first: $first, after: $after, categoryId: $categoryId,
-                orderBy: { field: CREATED_AT, direction: DESC }) {
+                orderBy: { field: $orderField, direction: DESC }) {
       totalCount
       pageInfo { endCursor hasNextPage }
       nodes {
-        number title createdAt url
+        number title createdAt updatedAt url
         author { ...authorFields }
         category { name slug }
+        labels(first: 6) { nodes { name color } }
+        comments { totalCount }
+        reactions { totalCount }
+      }
+    }
+  }
+}`;
+
+/* GitHub's search backend, scoped to this repo's discussions -- powers the site's search box */
+const Q_SEARCH = FRAG_AUTHOR + `
+query($q: String!, $first: Int!) {
+  search(type: DISCUSSION, query: $q, first: $first) {
+    discussionCount
+    nodes {
+      ... on Discussion {
+        number title createdAt updatedAt url
+        author { ...authorFields }
+        category { name slug }
+        labels(first: 6) { nodes { name color } }
         comments { totalCount }
         reactions { totalCount }
       }
@@ -220,6 +246,7 @@ query($number: Int!) {
       id number title body bodyHTML createdAt url
       author { ...authorFields }
       category { name slug }
+      labels(first: 6) { nodes { name color } }
       reactionGroups { content reactors { totalCount } }
       comments(first: ${COMMENT_PAGE}) {
         totalCount
@@ -300,6 +327,25 @@ const REACTION_CONTENTS = ['THUMBS_UP', 'THUMBS_DOWN', 'LAUGH', 'HOORAY', 'CONFU
 function shapeAuthor(a) {
   if (!a) return { login: 'ghost', avatarUrl: '', url: '' };
   return { login: a.login, avatarUrl: a.avatarUrl, url: a.url };
+}
+
+function shapeTags(labels) {
+  return (labels && labels.nodes ? labels.nodes : []).map(l => ({ name: l.name, color: l.color }));
+}
+
+function shapeListNode(n) {
+  return {
+    number: n.number,
+    title: n.title,
+    createdAt: n.createdAt,
+    updatedAt: n.updatedAt,
+    url: n.url,
+    author: shapeAuthor(n.author),
+    category: n.category ? { name: n.category.name, slug: n.category.slug } : null,
+    tags: shapeTags(n.labels),
+    commentCount: n.comments.totalCount,
+    reactionCount: n.reactions.totalCount,
+  };
 }
 
 function shapeReactions(groups) {
@@ -452,17 +498,20 @@ async function getCategories(env) {
   if (!token) return { error: 'auth', status: 500 };
   const data = await gql(token, Q_CATEGORIES);
   if (!data) return { error: 'upstream', status: 502 };
-  const cats = data.repository.discussionCategories.nodes.map(c => ({
-    id: c.id, name: c.name, slug: c.slug, description: c.description,
-    emojiHTML: c.emojiHTML, isAnswerable: c.isAnswerable,
-  }));
+  const cats = data.repository.discussionCategories.nodes
+    .filter(c => !HIDDEN_CATEGORY_SLUGS.has(c.slug))
+    .map(c => ({
+      id: c.id, name: c.name, slug: c.slug, description: c.description,
+      emojiHTML: c.emojiHTML, isAnswerable: c.isAnswerable,
+    }));
   const out = { repositoryId: data.repository.id, categories: cats };
   cachePut('categories', out, TTL_CATEGORIES);
   return out;
 }
 
-async function listDiscussions(env, categorySlug, after) {
-  const key = 'list|' + (categorySlug || '') + '|' + (after || '');
+async function listDiscussions(env, categorySlug, after, sort) {
+  const orderField = sort === 'active' ? 'UPDATED_AT' : 'CREATED_AT';
+  const key = 'list|' + (categorySlug || '') + '|' + (after || '') + '|' + orderField;
   const cached = cacheGet(key);
   if (cached) return cached;
 
@@ -477,22 +526,39 @@ async function listDiscussions(env, categorySlug, after) {
 
   const token = await authToken(env);
   if (!token) return { error: 'auth', status: 500 };
-  const data = await gql(token, Q_LIST, { first: PAGE_SIZE, after: after || null, categoryId });
+  const data = await gql(token, Q_LIST, { first: PAGE_SIZE, after: after || null, categoryId, orderField });
   if (!data) return { error: 'upstream', status: 502 };
   const d = data.repository.discussions;
   const out = {
     totalCount: d.totalCount,
     pageInfo: d.pageInfo,
-    discussions: d.nodes.map(n => ({
-      number: n.number,
-      title: n.title,
-      createdAt: n.createdAt,
-      url: n.url,
-      author: shapeAuthor(n.author),
-      category: n.category ? { name: n.category.name, slug: n.category.slug } : null,
-      commentCount: n.comments.totalCount,
-      reactionCount: n.reactions.totalCount,
-    })),
+    discussions: d.nodes
+      .filter(n => !(n.category && HIDDEN_CATEGORY_SLUGS.has(n.category.slug)))
+      .map(shapeListNode),
+  };
+  cachePut(key, out, TTL_LIST);
+  return out;
+}
+
+async function searchDiscussions(env, q) {
+  const term = String(q || '').trim().slice(0, 200);
+  if (term.length < 2) return { error: 'query too short', status: 400 };
+  const key = 'search|' + term.toLowerCase();
+  const cached = cacheGet(key);
+  if (cached) return cached;
+  const token = await authToken(env);
+  if (!token) return { error: 'auth', status: 500 };
+  const data = await gql(token, Q_SEARCH, {
+    q: 'repo:' + REPO_OWNER + '/' + REPO_NAME + ' in:title,body ' + term,
+    first: PAGE_SIZE,
+  });
+  if (!data) return { error: 'upstream', status: 502 };
+  const out = {
+    totalCount: data.search.discussionCount,
+    discussions: data.search.nodes
+      .filter(n => n && n.number)
+      .filter(n => !(n.category && HIDDEN_CATEGORY_SLUGS.has(n.category.slug)))
+      .map(shapeListNode),
   };
   cachePut(key, out, TTL_LIST);
   return out;
@@ -518,6 +584,7 @@ async function getDiscussion(env, number) {
     url: d.url,
     author: shapeAuthor(d.author),
     category: d.category ? { name: d.category.name, slug: d.category.slug } : null,
+    tags: shapeTags(d.labels),
     reactions: shapeReactions(d.reactionGroups),
     commentCount: d.comments.totalCount,
     comments: d.comments.nodes.map(shapeComment),
@@ -727,7 +794,10 @@ export default {
       } else if (path === '/community/categories') {
         result = await getCategories(env);
       } else if (path === '/community/discussions') {
-        result = await listDiscussions(env, url.searchParams.get('category'), url.searchParams.get('after'));
+        result = await listDiscussions(env, url.searchParams.get('category'), url.searchParams.get('after'),
+                                       url.searchParams.get('sort'));
+      } else if (path === '/community/search') {
+        result = await searchDiscussions(env, url.searchParams.get('q'));
       } else {
         const m = path.match(/^\/community\/discussions\/(\d+)$/);
         if (m) result = await getDiscussion(env, parseInt(m[1], 10));

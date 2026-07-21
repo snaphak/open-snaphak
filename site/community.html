@@ -23,31 +23,48 @@
 
 {% include header.html current="community" base="./" download="true" %}
 
-<main class="page-doc">
+<main class="page-doc community-page">
   <div class="wrap">
-    <div class="section-head">
-      <h1 class="section-title">Community</h1>
-    </div>
-    <p class="section-sub">
-      Tips, how-to guides, and questions from Snapmap+ users. Reading is open to everyone;
-      posts and comments are backed by
-      <a href="https://github.com/doom-snapmap/snapmap-plus/discussions">GitHub Discussions</a>,
-      so everything here is also there and vice versa.
-    </p>
-
-    <div class="community-bar">
-      <div id="community-tabs" class="cat-tabs" aria-label="Categories"></div>
-      <div class="community-actions">
-        <div id="community-auth" class="community-auth"></div>
-        <a class="btn btn-primary" href="community-compose.html">Write a post</a>
+    <div class="community-head">
+      <div>
+        <div class="section-head">
+          <h1 class="section-title">Community</h1>
+        </div>
+        <p class="section-sub">
+          How-to guides, tips &amp; tricks, and answers from Snapmap+ mappers.
+          Anyone can read; posting takes one click with a GitHub account.
+        </p>
       </div>
+      <div id="community-auth" class="community-auth"></div>
     </div>
 
-    <div id="community-list" aria-live="polite">
-      <div class="changelog-fallback">
-        Loading posts&hellip; If nothing appears, the community also lives on
-        <a href="https://github.com/doom-snapmap/snapmap-plus/discussions">GitHub Discussions</a>.
+    <div class="community-toolbar">
+      <div class="search-box" id="community-searchbox">
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="community-search" type="search" placeholder="Search guides and tips" aria-label="Search community posts" autocomplete="off">
+        <button class="search-clear" id="community-search-clear" type="button" aria-label="Clear search">
+          <svg class="ic ic-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
       </div>
+      <div class="select-wrap">
+        <select id="community-sort" aria-label="Sort posts">
+          <option value="created">Newest</option>
+          <option value="active">Recently active</option>
+        </select>
+        <svg class="ic ic-sm" viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <a class="btn btn-primary" href="community-compose.html">
+        <svg class="ic ic-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+        Write a post
+      </a>
+    </div>
+
+    <nav class="cat-nav" id="community-tabs" aria-label="Categories"></nav>
+
+    <div class="forum-panel" id="community-list" aria-live="polite">
+      <div class="sk-row"><div class="sk-line sk-w60"></div><div class="sk-line sk-w35"></div></div>
+      <div class="sk-row"><div class="sk-line sk-w60"></div><div class="sk-line sk-w35"></div></div>
+      <div class="sk-row"><div class="sk-line sk-w60"></div><div class="sk-line sk-w35"></div></div>
     </div>
     <div id="community-more" class="community-more"></div>
   </div>
