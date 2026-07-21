@@ -802,7 +802,9 @@ body > main { flex: 1 0 auto; }
 .search-box.has-query .search-clear { display: inline-flex; }
 .search-clear:hover { color: var(--ink); }
 
-.select-wrap { position: relative; }
+/* inline-block so the wrap hugs the select — the chevron anchors to the control,
+   not to however wide the surrounding field happens to be */
+.select-wrap { position: relative; display: inline-block; }
 .select-wrap .ic {
   position: absolute;
   right: 10px;
