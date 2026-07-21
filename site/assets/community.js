@@ -624,12 +624,15 @@
       var when = showUpdated && d.updatedAt
         ? "active " + fmtDate(d.updatedAt)
         : fmtDate(d.createdAt);
+      /* the whole row is ONE link — never nest the author's profile link inside it (nested
+         anchors are invalid HTML; the parser splits the row apart). Profile links live on the
+         post page. */
       return (
         '<a class="forum-row" href="community-post.html?n=' + d.number + '">' +
           '<div class="forum-main">' +
             '<h2 class="forum-title"><span>' + esc(d.title) + "</span>" + tagChips(d) + "</h2>" +
             '<div class="forum-meta">' + avatarImg(d.author, 16) +
-              "<span>" + authorLink(d.author) + "</span>" +
+              "<span>" + esc(d.author && d.author.login || "ghost") + "</span>" +
               '<span class="sep">&middot;</span><time datetime="' + esc(d.createdAt) + '">' + when + "</time>" +
             "</div>" +
           "</div>" +
