@@ -18,22 +18,23 @@
 
 {% include header.html current="community" base="./" download="true" %}
 
-<main class="page-doc">
+<main class="page-doc community-page">
   <div class="wrap">
-    <p class="crumb"><a href="community.html">&larr; All community posts</a></p>
+    <p class="crumb"><a href="community.html">
+      <svg class="ic ic-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+      All posts</a></p>
 
     <div class="section-head">
       <h1 class="section-title">Write a post</h1>
     </div>
     <p class="section-sub">
-      Share a tip, a how-to, or a question. Markdown works; drag-drop a screenshot to upload it;
-      paste a YouTube or Streamable link on its own line to embed the video. Your post is published
-      under your GitHub account and also appears on
-      <a href="https://github.com/doom-snapmap/snapmap-plus/discussions">GitHub Discussions</a>.
+      Share a how-to or a tip. Format with the toolbar, drop screenshots straight into the
+      editor, and paste a YouTube link on its own line to embed the video. Your GitHub account
+      is the author.
     </p>
 
     <div id="community-compose" aria-live="polite">
-      <div class="changelog-fallback">Loading the composer&hellip;</div>
+      <div class="sk-row"><div class="sk-line sk-w35"></div><div class="sk-line"></div><div class="sk-line sk-w60"></div></div>
     </div>
   </div>
 </main>
