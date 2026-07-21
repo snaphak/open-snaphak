@@ -575,6 +575,12 @@
     (d.tags || []).forEach(function (t) {
       html += '<span class="tag-chip tag-chip-label">' + esc(t.name) + "</span>";
     });
+    /* Q&A-format posts carry their open/resolved state (an answer accepted on GitHub) */
+    if (d.answerable) {
+      html += d.answered
+        ? '<span class="qa-chip qa-resolved">' + ic("check", "ic-sm") + "Resolved</span>"
+        : '<span class="qa-chip">Open</span>';
+    }
     return html;
   }
 
@@ -693,7 +699,7 @@
       } else {
         var qs = [];
         if (activeCat) qs.push("category=" + encodeURIComponent(activeCat));
-        if (sortSel && sortSel.value === "active") qs.push("sort=active");
+        if (sortSel && sortSel.value !== "created") qs.push("sort=" + encodeURIComponent(sortSel.value));
         if (after) qs.push("after=" + encodeURIComponent(after));
         path = "/community/discussions" + (qs.length ? "?" + qs.join("&") : "");
       }
@@ -824,10 +830,11 @@
         /* --- the thread: composer docked on top, then comments --- */
         function commentBlock(c, isReply) {
           return (
-            '<article class="comment" data-cid="' + esc(c.id) + '">' +
+            '<article class="comment' + (c.isAnswer ? " comment-answer" : "") + '" data-cid="' + esc(c.id) + '">' +
               '<div class="comment-head">' + avatarImg(c.author, 22) +
                 '<span class="c-author">' + authorLink(c.author) + "</span>" +
                 '<time datetime="' + esc(c.createdAt) + '">' + fmtDate(c.createdAt) + "</time>" +
+                (c.isAnswer ? '<span class="answer-badge">' + ic("check", "ic-sm") + "Accepted answer</span>" : "") +
               "</div>" +
               '<div class="comment-body">' + c.bodyHTML + "</div>" +
               '<div class="comment-actions">' +

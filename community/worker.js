@@ -51,12 +51,18 @@ const SITE_ORIGIN = 'https://doom-snapmap.github.io';
 const SITE_BASE = SITE_ORIGIN + '/snapmap-plus';
 const CLIENT_ID = 'Iv23liFSVvbqF4r8a2uK';   // public identifier of the snapmap-plus-community App
 
-/* The site's Community section is a knowledge base (how-to guides, tips, questions). These
- * repo categories exist for other channels and never surface here -- not in the tabs, not in
- * the composer, and posts filed under them stay off the site's lists. Creating a new category
- * in repo settings (e.g. "How-To Guides", "Tips & Tricks") needs no code change: anything not
- * on this list appears automatically. */
-const HIDDEN_CATEGORY_SLUGS = new Set(['announcements', 'polls', 'show-and-tell', 'general', 'ideas']);
+/* Categories reserved for other channels (Discord) never surface on the site -- not in the
+ * tabs, not in the composer, and posts filed under them stay off the site's lists. Creating a
+ * new category in repo settings needs no code change: anything not on this list appears
+ * automatically. */
+const HIDDEN_CATEGORY_SLUGS = new Set(['polls', 'show-and-tell', 'ideas']);
+
+/* Tab order: content categories first, housekeeping last; anything new lands in between,
+ * alphabetically. */
+const CATEGORY_ORDER = { 'how-to-guides': 0, 'tips-tricks': 1, 'help-questions': 2, 'general': 8, 'announcements': 9 };
+function categoryRank(slug) {
+  return CATEGORY_ORDER[slug] !== undefined ? CATEGORY_ORDER[slug] : 5;
+}
 
 /* cache TTLs (seconds): categories change rarely; lists/posts should feel fresh */
 const TTL_CATEGORIES = 600;
@@ -208,9 +214,9 @@ query($first: Int!, $after: String, $categoryId: ID, $orderField: DiscussionOrde
       totalCount
       pageInfo { endCursor hasNextPage }
       nodes {
-        number title createdAt updatedAt url
+        number title createdAt updatedAt answerChosenAt url
         author { ...authorFields }
-        category { name slug }
+        category { name slug isAnswerable }
         labels(first: 6) { nodes { name color } }
         comments { totalCount }
         reactions { totalCount }
@@ -226,9 +232,9 @@ query($q: String!, $first: Int!) {
     discussionCount
     nodes {
       ... on Discussion {
-        number title createdAt updatedAt url
+        number title createdAt updatedAt answerChosenAt url
         author { ...authorFields }
-        category { name slug }
+        category { name slug isAnswerable }
         labels(first: 6) { nodes { name color } }
         comments { totalCount }
         reactions { totalCount }
@@ -243,15 +249,15 @@ const Q_POST = FRAG_AUTHOR + `
 query($number: Int!) {
   repository(owner: "${REPO_OWNER}", name: "${REPO_NAME}") {
     discussion(number: $number) {
-      id number title body bodyHTML createdAt url
+      id number title body bodyHTML createdAt answerChosenAt url
       author { ...authorFields }
-      category { name slug }
+      category { name slug isAnswerable }
       labels(first: 6) { nodes { name color } }
       reactionGroups { content reactors { totalCount } }
       comments(first: ${COMMENT_PAGE}) {
         totalCount
         nodes {
-          id body bodyHTML createdAt url
+          id body bodyHTML createdAt url isAnswer
           author { ...authorFields }
           reactionGroups { content reactors { totalCount } }
           replies(first: ${REPLY_PAGE}) {
@@ -343,6 +349,8 @@ function shapeListNode(n) {
     author: shapeAuthor(n.author),
     category: n.category ? { name: n.category.name, slug: n.category.slug } : null,
     tags: shapeTags(n.labels),
+    answerable: !!(n.category && n.category.isAnswerable),
+    answered: !!n.answerChosenAt,
     commentCount: n.comments.totalCount,
     reactionCount: n.reactions.totalCount,
   };
@@ -364,6 +372,7 @@ function shapeComment(c) {
     bodyHTML: c.bodyHTML,
     createdAt: c.createdAt,
     url: c.url,
+    isAnswer: !!c.isAnswer,
     author: shapeAuthor(c.author),
     reactions: shapeReactions(c.reactionGroups),
     replies: (c.replies ? c.replies.nodes : []).map(r => ({
@@ -503,15 +512,19 @@ async function getCategories(env) {
     .map(c => ({
       id: c.id, name: c.name, slug: c.slug, description: c.description,
       emojiHTML: c.emojiHTML, isAnswerable: c.isAnswerable,
-    }));
+    }))
+    .sort((a, b) => (categoryRank(a.slug) - categoryRank(b.slug)) || a.name.localeCompare(b.name));
   const out = { repositoryId: data.repository.id, categories: cats };
   cachePut('categories', out, TTL_CATEGORIES);
   return out;
 }
 
 async function listDiscussions(env, categorySlug, after, sort) {
+  /* 'top' has no GraphQL orderBy: fetch a wide window newest-first and rank by reactions here.
+   * Correct while the forum holds <100 posts per view; beyond that the tail truncates (logged). */
+  const top = sort === 'top';
   const orderField = sort === 'active' ? 'UPDATED_AT' : 'CREATED_AT';
-  const key = 'list|' + (categorySlug || '') + '|' + (after || '') + '|' + orderField;
+  const key = 'list|' + (categorySlug || '') + '|' + (top ? '' : (after || '')) + '|' + (top ? 'TOP' : orderField);
   const cached = cacheGet(key);
   if (cached) return cached;
 
@@ -526,15 +539,28 @@ async function listDiscussions(env, categorySlug, after, sort) {
 
   const token = await authToken(env);
   if (!token) return { error: 'auth', status: 500 };
-  const data = await gql(token, Q_LIST, { first: PAGE_SIZE, after: after || null, categoryId, orderField });
+  const data = await gql(token, Q_LIST, {
+    first: top ? 100 : PAGE_SIZE,
+    after: top ? null : (after || null),
+    categoryId,
+    orderField,
+  });
   if (!data) return { error: 'upstream', status: 502 };
   const d = data.repository.discussions;
+  let nodes = d.nodes
+    .filter(n => !(n.category && HIDDEN_CATEGORY_SLUGS.has(n.category.slug)))
+    .map(shapeListNode);
+  let pageInfo = d.pageInfo;
+  if (top) {
+    if (d.pageInfo.hasNextPage) console.log('top sort: >100 discussions, ranking truncated to the newest 100');
+    nodes.sort((a, b) => (b.reactionCount - a.reactionCount) || (a.createdAt < b.createdAt ? 1 : -1));
+    nodes = nodes.slice(0, PAGE_SIZE);
+    pageInfo = { endCursor: null, hasNextPage: false };
+  }
   const out = {
     totalCount: d.totalCount,
-    pageInfo: d.pageInfo,
-    discussions: d.nodes
-      .filter(n => !(n.category && HIDDEN_CATEGORY_SLUGS.has(n.category.slug)))
-      .map(shapeListNode),
+    pageInfo,
+    discussions: nodes,
   };
   cachePut(key, out, TTL_LIST);
   return out;
@@ -585,6 +611,8 @@ async function getDiscussion(env, number) {
     author: shapeAuthor(d.author),
     category: d.category ? { name: d.category.name, slug: d.category.slug } : null,
     tags: shapeTags(d.labels),
+    answerable: !!(d.category && d.category.isAnswerable),
+    answered: !!d.answerChosenAt,
     reactions: shapeReactions(d.reactionGroups),
     commentCount: d.comments.totalCount,
     comments: d.comments.nodes.map(shapeComment),

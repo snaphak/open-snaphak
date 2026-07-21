@@ -902,6 +902,22 @@ body > main { flex: 1 0 auto; }
   text-transform: none;
   letter-spacing: 0.02em;
 }
+/* Q&A open/resolved state (an answer accepted on GitHub) */
+.qa-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.qa-chip .ic { width: 12px; height: 12px; }
+.qa-resolved { color: var(--wire); background: var(--wire-faint); border-color: transparent; }
 .forum-meta {
   display: flex;
   align-items: center;
@@ -1161,6 +1177,24 @@ body > main { flex: 1 0 auto; }
 
 .comment-editing > .comment-body { display: none; }
 .comment .rte { margin: 8px 0 4px 31px; }
+
+/* the accepted answer stands out from the thread */
+.comment.comment-answer {
+  border: 1px solid var(--wire-soft);
+  background: rgba(74, 201, 240, 0.05);
+  padding: 14px 16px 8px;
+  margin: 14px 0 12px;
+}
+.answer-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: var(--wire);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
 
 /* -- rich text editor -- */
 .rte { border: 1px solid var(--line); background: var(--deck); }
