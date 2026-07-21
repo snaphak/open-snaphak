@@ -826,6 +826,9 @@ body > main { flex: 1 0 auto; }
 }
 .community-toolbar .btn { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
 .select-wrap .ic-sort { display: none; }
+/* option lists never inherit the closed control's styling tricks (e.g. the mobile icon
+   button's transparent text) — pin readable colors on the popup items everywhere */
+.community-page select option { color: var(--ink); background: var(--deck); }
 
 .search-box input:focus,
 .select-wrap select:focus {
