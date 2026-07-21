@@ -683,6 +683,175 @@ section.deck { background: var(--deck); border-top: 1px solid var(--line-soft); 
   color: var(--muted);
 }
 
+/* ---------- community pages ---------- */
+
+.community-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin: 0 0 26px;
+}
+.cat-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cat-tab {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 6px 14px;
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+}
+.cat-tab:hover { color: var(--wire); border-color: var(--wire-soft); }
+.cat-tab.active { color: #10150c; background: var(--wire); border-color: var(--wire); }
+
+.post-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 16px 20px;
+  margin: 0 0 12px;
+  color: var(--ink);
+  clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+}
+.post-card:hover { border-color: var(--wire-soft); background: #16202c; }
+.post-card-main { min-width: 0; }
+.post-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  letter-spacing: 0.03em;
+}
+.post-title::before {
+  content: "";
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--wire);
+  background: var(--wire-faint);
+}
+.post-card:hover .post-title { color: var(--wire); }
+
+.post-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.post-meta .sep { opacity: 0.5; }
+.post-meta a { color: var(--muted); }
+.post-meta a:hover { color: var(--wire); }
+.post-meta .avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  vertical-align: middle;
+}
+.post-meta-page { margin: 0 0 26px; font-size: 14.5px; }
+.cat-pill {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--wire);
+  background: var(--wire-faint);
+  padding: 2px 8px;
+}
+
+.post-card-counts { display: flex; gap: 8px; flex: none; }
+.count-chip {
+  color: var(--muted);
+  font-size: 13px;
+  font-family: var(--mono);
+  border: 1px solid var(--line-soft);
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+.community-more { margin: 22px 0 0; text-align: center; }
+
+/* post body + comments render GitHub's own HTML — give it the site's typography */
+.post-body { color: var(--ink); font-size: 16px; line-height: 1.65; }
+.post-body img, .comment-body img { max-width: 100%; height: auto; border: 1px solid var(--line); }
+.post-body pre, .comment-body pre {
+  background: var(--deck);
+  border: 1px solid var(--line);
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 13.5px;
+}
+.post-body code, .comment-body code { font-family: var(--mono); font-size: 0.92em; }
+.post-body blockquote, .comment-body blockquote {
+  border-left: 3px solid var(--wire-soft);
+  margin: 10px 0;
+  padding: 2px 0 2px 14px;
+  color: var(--muted);
+}
+.post-body h1, .post-body h2, .post-body h3 { margin: 22px 0 10px; }
+.post-body table, .comment-body table { border-collapse: collapse; display: block; overflow-x: auto; }
+.post-body th, .post-body td, .comment-body th, .comment-body td {
+  border: 1px solid var(--line);
+  padding: 6px 12px;
+}
+
+.video-embed {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  margin: 14px 0;
+  border: 1px solid var(--line);
+  background: var(--deck);
+}
+.video-embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+.post-foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 20px 0 0;
+  font-size: 14px;
+}
+.reactions { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.reaction-chip {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 13px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.gh-link { color: var(--wire); }
+
+.community-thread { margin: 44px 0 0; }
+.thread-title { font-size: 20px; }
+.page-doc .thread-title { font-size: 20px; }
+.comment {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 14px 18px;
+  margin: 0 0 12px;
+}
+.comment-reply { margin-left: 34px; border-left: 2px solid var(--wire-soft); }
+.comment-body { color: var(--ink); font-size: 15px; line-height: 1.6; margin: 8px 0; }
+.comment .reactions { margin-top: 4px; }
+.crumb { font-size: 14px; margin: 0 0 18px; }
+.crumb a { color: var(--muted); }
+.crumb a:hover { color: var(--wire); }
+
 /* ---------- rendered markdown pages (the guide, the privacy policy) ---------- */
 
 .guide-shell {

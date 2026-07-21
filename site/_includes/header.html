@@ -1,7 +1,7 @@
 {%- comment -%}
   Shared site header — the sticky nav + mobile hamburger, used by every page.
   Params:
-    current  — active page for aria-current: "home" | "guide" | "changelog" (omit on 404)
+    current  — active page for aria-current: "home" | "guide" | "changelog" | "community" (omit on 404)
     base     — link prefix: "./" for the root pages, "/snapmap-plus/" for the 404
     download — pass "true" to include the Download button (omit on 404)
 {%- endcomment -%}
@@ -17,6 +17,7 @@
           <a href="{{ include.base }}"{% if include.current == 'home' %} aria-current="page"{% endif %}>Home</a>
           <a href="{{ include.base }}snapmap-plus-guide.html"{% if include.current == 'guide' %} aria-current="page"{% endif %}>Guide</a>
           <a href="{{ include.base }}changelog.html"{% if include.current == 'changelog' %} aria-current="page"{% endif %}>Changelog</a>
+          <a href="{{ include.base }}community.html"{% if include.current == 'community' %} aria-current="page"{% endif %}>Community</a>
           <a href="https://github.com/doom-snapmap/snapmap-plus">GitHub</a>
         </div>
         {% if include.download %}<a class="btn-nav" data-dl href="https://github.com/doom-snapmap/snapmap-plus/releases">Download</a>{% endif %}
