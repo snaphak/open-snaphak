@@ -55,7 +55,17 @@ void recovery_arm(void)
     if (InterlockedExchange(&g_armed, 1) == 0) { g_state = 1; g_frames = 0; }
 }
 
-/* The proven editor->browser exit, one step per frame, on the main thread. */
+/* The proven editor->browser exit, one step per frame, on the main thread.
+ *
+ * CONTEXT GATES (the v0.2.1-beta.1 play-transition crash, issue #43): the drive is only valid in a LIVE
+ * editor context. A fault during the editor->PLAY build also arms it, but there the editor's menu-screen
+ * object *(ed+ED_MENU_SCREEN) is already torn down (it exists only in-editor) -- and the StartMenu state's
+ * Begin handler (0x535730) writes through that pointer as its FIRST action, so an ungated
+ * SetState(ed, 0xB) itself AV'd at NULL+0xa2c and produced a second, self-inflicted crash record.
+ * So before driving: (1) not in the editor at all -> nothing to steer, disarm; (2) load_state != 3 -> a
+ * play/boot load is in flight (the in-editor in-place load never writes load_state, so the real Class-B
+ * context always reads 3 = RUNNING) -> wait; (3) menu-screen NULL -> the StartMenu cannot be hosted yet
+ * -> wait. The RECOVER_BUDGET_FRAMES backstop still bounds every wait. */
 static void recovery_tick(void)
 {
     if (!g_armed) return;
@@ -72,16 +82,32 @@ static void recovery_tick(void)
 
     switch (g_state) {
     case 1: /* open StartMenu (synchronous), then arm the EXIT (pending + GDM result = Yes) */
-        if (ed_state() != EDITOR_STATE_STARTMENU)
-            SetState(ed, EDITOR_STATE_STARTMENU);
-        if (ed_state() == EDITOR_STATE_STARTMENU && *(volatile uint8_t *)(ed + ED_EXITING) == 0) {
-            *(volatile int32_t *)(ed + ED_EXIT_PENDING) = 1;
+        if (!in_editor()) {
+            /* Faulted outside a live editor context (e.g. during the editor->PLAY build): the engine's
+             * own Error(6) recovery is already dropping to the menu -- no editor-exit drive to run. */
+            shield_fault f = { "load", -1,
+                "recovery: no live editor context (play/boot transition) -- editor-exit drive not needed", 0, 0 };
+            shield_emit(&f);
+            InterlockedExchange(&g_armed, 0);
+            break;
+        }
+        if (*(volatile int32_t *)(g_doom_base + RVA_LOAD_STATE) != 3)
+            break;   /* a play/boot load is in flight -- wait (budget-bounded) */
+        {
             void *ms = *(void **)(ed + ED_MENU_SCREEN);
-            if (ms) {
-                void *gdm = *(void **)((uint8_t *)ms + MENUSCREEN_GDM);
-                if (gdm) *(volatile int32_t *)((uint8_t *)gdm + GDM_RESULT) = 0;
+            if (ms == NULL)
+                break;   /* the StartMenu Begin writes through this object -- wait until it exists */
+            if (ed_state() != EDITOR_STATE_STARTMENU)
+                SetState(ed, EDITOR_STATE_STARTMENU);
+            if (ed_state() == EDITOR_STATE_STARTMENU && *(volatile uint8_t *)(ed + ED_EXITING) == 0) {
+                *(volatile int32_t *)(ed + ED_EXIT_PENDING) = 1;
+                ms = *(void **)(ed + ED_MENU_SCREEN);   /* re-read: SetState can rebuild the screen */
+                if (ms) {
+                    void *gdm = *(void **)((uint8_t *)ms + MENUSCREEN_GDM);
+                    if (gdm) *(volatile int32_t *)((uint8_t *)gdm + GDM_RESULT) = 0;
+                }
+                g_state = 2;
             }
-            g_state = 2;
         }
         break;
     case 2: /* the StartMenu Think calls ExitEditor in-frame; done once we're out of the editor */
