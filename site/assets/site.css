@@ -629,33 +629,32 @@ section.deck { background: var(--deck); border-top: 1px solid var(--line-soft); 
 /* ---------- changelog page ---------- */
 
 .page-doc { padding: 56px 0 80px; }
-.page-doc > .wrap { max-width: 880px; }
+/* Use the shared 1140px wrap (inherited from .wrap) so the left/right gutters match Home + Guide. */
+/* Match the Changelog title to the Guide banner (.guide-doc h1). */
+.page-doc .section-title { font-size: clamp(1.9rem, 4.4vw, 2.7rem); line-height: 1.1; }
 
-.release {
-  position: relative;
-  border-left: 2px solid var(--line);
-  margin: 0 0 8px;
-  padding: 0 0 34px 30px;
-}
-.release::before {
-  content: "";
-  position: absolute;
-  left: -7px;
-  top: 6px;
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--wire);
-  background: var(--void);
-  box-shadow: 0 0 10px rgba(74, 201, 240, 0.4);
-}
-.release:last-child { border-left-color: transparent; }
+.release { margin: 0 0 34px; }
+.release:last-child { margin-bottom: 0; }
 
 .release-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 0 0 8px; }
 .release-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   font-size: 22px;
   font-weight: 700;
   margin: 0;
   letter-spacing: 0.05em;
+}
+/* Blue node square next to each release title — same size/style as the guide's section squares. */
+.release-head h2::before {
+  content: "";
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--wire);
+  background: var(--wire-faint);
+  box-shadow: 0 0 8px rgba(74, 201, 240, 0.35);
 }
 .release-head time { color: var(--muted); font-size: 14px; }
 .tag-pill {
@@ -696,8 +695,10 @@ section.deck { background: var(--deck); border-top: 1px solid var(--line-soft); 
 
 .guide-toc {
   position: sticky;
-  top: 84px;
-  max-height: calc(100vh - 108px);
+  /* Pin at the TOC's natural rest offset (header 61px + shell padding 48px) so it
+     sticks immediately with no scroll travel before pinning. */
+  top: 109px;
+  max-height: calc(100vh - 133px);
   overflow-y: auto;
   font-size: 14px;
   padding-right: 6px;
@@ -825,6 +826,10 @@ section.deck { background: var(--deck); border-top: 1px solid var(--line-soft); 
 .guide-doc blockquote p { margin: 0; }
 
 .guide-doc hr { border: 0; border-top: 1px solid var(--line-soft); margin: 44px 0; }
+/* Section boundaries are `---` immediately before an `## h2`, and the h2 draws its own
+   border-top divider — so the hr would be a redundant second line. Drop it; the heading's
+   border is the single divider. */
+.guide-doc hr:has(+ h2) { display: none; }
 
 .guide-doc ul, .guide-doc ol { padding-left: 24px; }
 .guide-doc li { margin: 5px 0; }
