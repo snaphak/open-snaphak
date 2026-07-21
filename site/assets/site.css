@@ -825,6 +825,7 @@ body > main { flex: 1 0 auto; }
   cursor: pointer;
 }
 .community-toolbar .btn { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+.select-wrap .ic-sort { display: none; }
 
 .search-box input:focus,
 .select-wrap select:focus {
@@ -1389,10 +1390,32 @@ dialog.smp-modal[open] { animation: modal-in 0.18s cubic-bezier(0.22, 1, 0.36, 1
 }
 
 @media (max-width: 640px) {
-  .community-head { flex-direction: column; gap: 6px; }
-  .community-auth { padding-top: 0; }
+  .community-head { flex-direction: column; gap: 0; }
+  .community-head .section-sub { margin-bottom: 12px; }
+  /* the signed-in row becomes its own hairline-separated strip, right-aligned */
+  .community-auth {
+    width: 100%;
+    display: flex;
+    justify-content: flex-end;
+    padding: 10px 0 12px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .community-toolbar { gap: 8px; }
   .community-toolbar .btn { margin-left: 0; width: 100%; justify-content: center; }
-  .search-box { max-width: none; flex-basis: 100%; }
+  /* search + sort share one row; the sort select collapses to an icon button
+     (the native picker still opens on tap) */
+  .search-box { max-width: none; flex: 1 1 auto; }
+  .community-toolbar .select-wrap select { width: 44px; padding: 9px 0; color: transparent; }
+  .community-toolbar .select-wrap .ic-chevron { display: none; }
+  .community-toolbar .select-wrap .ic-sort {
+    display: block;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    color: var(--muted);
+    pointer-events: none;
+  }
   .forum-row { flex-direction: column; align-items: flex-start; gap: 8px; }
   .forum-stats { gap: 14px; }
   .comment-body, .comment .rte { margin-left: 0; }
