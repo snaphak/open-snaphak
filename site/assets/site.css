@@ -1316,6 +1316,11 @@ dialog.smp-modal[open] { animation: modal-in 0.18s cubic-bezier(0.22, 1, 0.36, 1
 .crumb a { color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
 .crumb a:hover { color: var(--wire); }
 .community-page :focus-visible { outline: 2px solid var(--wire-soft); outline-offset: 2px; }
+/* fields with their own focus ring (border + glow) must not ALSO get the generic outline —
+   that reads as a double border */
+.community-page input:focus-visible,
+.community-page select:focus-visible,
+.community-page .rte-area:focus-visible { outline: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .sk-line { animation: none; }
