@@ -21,3 +21,7 @@ dist/
 
 # wrangler's local cache (account metadata -- never commit)
 feedback/.wrangler/
+community/.wrangler/
+
+# wrangler local-dev secrets (per-machine; never commit)
+.dev.vars
