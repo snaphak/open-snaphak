@@ -35,6 +35,7 @@
 #include "target_any.h"   /* sh_target_any editor-decl visibility toggle (OG FUN_180021EE0 port) */
 #include "wiring_cleandirect.h" /* sh_target_any wire-any: force the stock clean-direct connect branch (bind to any target ENTITY, no input radial) */
 #include "ui_bridge.h"
+#include "config.h"
 #include "iface_engine.h"
 #include "apply_engine.h"
 #include "cvar_unlock.h"   /* merged-in cvar-unlock (former standalone dinput8) */
@@ -122,6 +123,7 @@ static DWORD WINAPI bootstrap_thread(LPVOID p)
      * overrides / rawmaps / strids / prefabs work on a clean install instead of silently no-opping
      * (the reason an end-user couldn't see the "unknown entity" override served from overrides\). */
     ensure_user_dirs();
+    sh_config_init(); /* nonfatal: the service retains defaults and status flags on failure */
 
     /* Poll the resolver until the SteamStub has decrypted .text (full DB resolves uniquely) or we time
      * out. sig_resolve_all returns the count of UNIQUE resolves; the bar is the whole DB. While .text is

@@ -26,6 +26,7 @@
 #include "snapmap_plus_iface.h"
 #include "ui_bridge.h"
 #include "backend_log.h"
+#include "config.h"
 #include "snapstack.h"
 
 /* The shared interface object the frontend consumes (OG DAT_18003e608). Created once at spine install;
@@ -72,6 +73,9 @@ int sh_ui_bridge_install(void)
         backend_log("C0: ui-bridge abort -- no interface object");
         return 0;
     }
+    /* The frontend may read its theme as soon as its DLL thread begins. Bind the engine-independent
+     * config service before any command registration, LoadLibrary, or CreateThread can expose it. */
+    sh_config_bind_iface_slots();
 
     /* 1.5) Register the 20 SnapStack subcommands (snapstack.c) here in the backend, once, before the
      *    frontend loads. This is the SOLE registration -- the frontend never re-registers/overwrites

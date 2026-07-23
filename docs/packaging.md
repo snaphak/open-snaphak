@@ -16,6 +16,10 @@ frontend renders in the **system-installed WebView2 runtime** (preinstalled on W
 runtime on most Windows 10), so there is no UI-toolkit runtime to bundle. The two DLLs' exact sizes shift per build
 (MSVC embeds a build timestamp), so equivalence is judged on the export/ordinal surface, not byte size.
 
+Persistent settings do not add a payload file. The backend creates
+`%LOCALAPPDATA%\snapmap-plus\config.json` at runtime when Snapmap+ first starts, so the deployable
+overlay remains the same two DLLs.
+
 ## Layout
 
 ```
@@ -46,11 +50,16 @@ auto under `--yes`). This never blocks the mod install — the DLLs deploy regar
   `System32\winmm.dll`. (Never ship a `winmm.dll`: a stub shadowing System32's copy kills the launch
   before any logging.)
 
-## Overrides are NOT shipped
+## Per-user data is NOT shipped
 
 The bundle ships **no override decls** — those are per-user configuration. At runtime the tool reads your own
 from `%LOCALAPPDATA%\snapmap-plus\overrides\` (pure file-shadow data, e.g. to make extra editor entities placeable).
 Slot your own overrides there; the bundle provides none.
+
+The bundle also ships no `config.json`. That file is runtime-owned player data, separate from the
+installer's executable and `install.json` record. The installer never rewrites it and preserves it across
+update, uninstall, and reinstall; deleting it yourself resets preferences because the backend recreates
+defaults on the next startup.
 
 ## Build-target anchor (portability)
 

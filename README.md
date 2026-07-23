@@ -14,7 +14,7 @@ research; the third-party runtime it links against (the DOOM engine, Microsoft's
 
 | Path | What |
 |---|---|
-| `src/backend/` | the backend DLL (`XINPUT1_3.dll`): the hook layer, 29 console commands, 10 cvars, cvar-unlock, and the resident fault-shield |
+| `src/backend/` | the backend DLL (`XINPUT1_3.dll`): the hook layer, 29 console commands, 10 cvars, the persistent-settings registry, cvar-unlock, and the resident fault-shield |
 | `src/ui/` | the frontend DLL (`snapmap-plus-ui.dll`): the WebView2 **Snapmap+** window (`webview/` = the host + `mockup.html`) |
 | `src/common/` | the shared backend↔frontend interface ABI (`snapmap_plus_iface.h`) |
 | `src/fault_shield/` | the recover-in-place vectored-exception fault shield (compiled into the backend) |
@@ -31,8 +31,8 @@ research; the third-party runtime it links against (the DOOM engine, Microsoft's
 You do **not** need to build anything. Get `snapmap-plus.exe` from the latest release and **double-click it** — it
 auto-detects your DOOM install via Steam, asks you to confirm, and installs. (From a terminal: `snapmap-plus install`.)
 
-`snapmap-plus.exe` installs itself to `%LOCALAPPDATA%\snapmap-plus\` (also the home of your overrides /
-prefabs / rawmaps). Run it again any time for `snapmap-plus update`, `snapmap-plus status`,
+`snapmap-plus.exe` installs itself to `%LOCALAPPDATA%\snapmap-plus\` (also the home of your settings /
+overrides / prefabs / rawmaps). Run it again any time for `snapmap-plus update`, `snapmap-plus status`,
 `snapmap-plus version`, and `snapmap-plus uninstall` (which restores DOOM to vanilla and leaves your
 modding data untouched). Coming from the **original SnapHak**? Install/update detects it in
 your DOOM folder and removes its files as part of the install — your maps, prefabs and overrides carry
@@ -117,7 +117,7 @@ code — is in **[`docs/contributing.md`](docs/contributing.md)**. The short ver
 2. Make your change under `src/`. Build (`build.ps1`), package (`package.ps1`), and test it in your own DOOM
    via `installer\snapmap-plus.exe install --local dist`.
 3. Open a **pull request** against `main`. The CI gate runs a security scan (no new binaries · capability-surface
-   scan · gitleaks), the Windows build + package, the XInput ordinal-parity check, the C unit tests
+   scan · gitleaks), the Windows build + package, the XInput ordinal-parity check, the 11-test native suite
    (`tests\run-tests.ps1`), and the installer's `gofmt`/`vet`/`test`; a maintainer reviews and merges. Tagged,
    reviewed commits are what produce releases.
 
@@ -146,10 +146,31 @@ describing the change instead.
 
 | Doc | What |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | the backend↔frontend boundary, the WebView2 host, the 30 Hz think-loop, the 77-slot interface vtable |
+| [`docs/architecture.md`](docs/architecture.md) | the backend↔frontend boundary, the WebView2 host, the 30 Hz think-loop, the 77 original slots + append-only extension ABI, and persistent configuration |
 | [`docs/fidelity.md`](docs/fidelity.md) | the original's quirks the clone reproduces on purpose, and the one sanctioned divergence (the fault-shield) |
 | [`docs/capabilities.md`](docs/capabilities.md) | the full feature inventory — every console command, cvar, SnapStack op, and GUI tab |
 | [`docs/packaging.md`](docs/packaging.md) | the deployable bundle: the lean 2-file overlay |
+
+## Persistent settings
+
+The backend owns `%LOCALAPPDATA%\snapmap-plus\config.json`. It creates the file on the first Snapmap+
+startup after install (not during installation), and the Studio window's **Light / Dark** choice is the
+first registered setting:
+
+```json
+{
+  "schema_version": 1,
+  "settings": {
+    "theme": "light"
+  }
+}
+```
+
+The choice survives restarts, updates, uninstall, and reinstall. Deleting `config.json` is the supported
+"reset preferences" operation: the next startup recreates it with defaults. The registry-backed format is
+designed for more settings without adding a new backend↔frontend ABI slot for each one; unknown values are
+preserved when a supported-schema file is rewritten. See [`docs/architecture.md`](docs/architecture.md)
+for validation, recovery, and I/O-failure behavior.
 
 ## Overrides (runtime)
 

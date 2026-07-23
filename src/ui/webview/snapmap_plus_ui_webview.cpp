@@ -35,6 +35,8 @@
 #include "WebView2.h"
 #include "snapmap_plus_iface.h"
 #include "mockup_html.h"
+#include "config_message.h"
+#include "theme_bootstrap.h"
 #include "report_scrub.h"   /* pure anonymization scrub + tail for the crash-report log attachment */
 #include "../sh_entity_desc.h" /* GENERATED: OUR RE-extracted Inherit/Classname descriptions (same table sh_tabs.cpp uses) */
 #include "../sh_event_catalog.h" /* GENERATED: OUR event-def catalog, 1611 events (same table sh_timeline.cpp uses) */
@@ -54,6 +56,11 @@ static ICoreWebView2           *g_webview      = nullptr;
 static bool                     g_webview_ready = false;
 static std::wstring             g_html;
 static std::string              g_version = "dev";
+static unsigned int             g_config_status_flags = 0;
+static bool                     g_config_status_posted = false;
+
+#define POC_CONFIG_KEY_CAP 128u
+#define POC_CONFIG_VALUE_CAP (64u * 1024u)
 
 static bool          g_sync_on       = false;   /* "Synchronize with editor" checkbox */
 static int           g_displayed_eid = -1;      /* entity the state panel is showing */
@@ -1121,6 +1128,72 @@ static void poc_send_entity_assets()
 }
 static void poc_post_json(const wchar_t *json) { if (g_webview) g_webview->PostWebMessageAsJson(json); }
 
+/* The two append-only config slots transport canonical JSON fragments. The getter is deliberately
+ * retried because another process can replace config.json between its size query and copy call. */
+static int poc_config_get_json(const std::string &key, std::string &value,
+                               unsigned int *out_flags)
+{
+    unsigned int flags = 0;
+    value.clear();
+    if (out_flags) *out_flags = 0;
+    if (key.empty() || key.size() > POC_CONFIG_KEY_CAP ||
+        !g_iface || !g_iface->vtbl || !g_iface->vtbl->config_get_json)
+        return -1;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        int needed = g_iface->vtbl->config_get_json(
+            g_iface, key.c_str(), nullptr, 0, &flags);
+        if (out_flags) *out_flags = flags;
+        if (needed < 0 || (unsigned int)needed > POC_CONFIG_VALUE_CAP)
+            return -1;
+        std::vector<char> buffer((size_t)needed + 1u, 0);
+        int got = g_iface->vtbl->config_get_json(
+            g_iface, key.c_str(), buffer.data(), (int)buffer.size(), &flags);
+        if (out_flags) *out_flags = flags;
+        if (got >= 0 && (size_t)got < buffer.size()) {
+            value.assign(buffer.data(), (size_t)got);
+            return got;
+        }
+        if (got < 0 || (unsigned int)got > POC_CONFIG_VALUE_CAP)
+            return -1;
+    }
+    return -1;
+}
+
+static void poc_post_config_value(const std::string &key)
+{
+    std::string value;
+    unsigned int flags = 0;
+    int got = poc_config_get_json(key, value, &flags);
+    g_config_status_flags |= flags;
+    std::wstring message = L"{\"kind\":\"configValue\",\"key\":\"";
+    message += poc_json_w(key.c_str());
+    message += L"\",\"valueJson\":\"";
+    if (got >= 0) message += poc_json_w(value.c_str());
+    message += L"\",\"result\":";
+    message += got >= 0 ? L"1}" : L"0}";
+    poc_post_json(message.c_str());
+}
+
+static void poc_post_config_set_result(const std::string &key, int result)
+{
+    std::wstring message = L"{\"kind\":\"configSetResult\",\"key\":\"";
+    message += poc_json_w(key.c_str());
+    message += L"\",\"result\":";
+    message += std::to_wstring(result);
+    message += L"}";
+    poc_post_json(message.c_str());
+}
+
+static void poc_post_config_status()
+{
+    if (g_config_status_posted) return;
+    std::wstring message = L"{\"kind\":\"configStatus\",\"flags\":";
+    message += std::to_wstring(g_config_status_flags);
+    message += L"}";
+    poc_post_json(message.c_str());
+    g_config_status_posted = true;
+}
+
 /* cheap targeted scan of a prefab JSON body (no full JSON parser, same "find key -> read quoted value"
  * approach as json_get_wstr): the entity count is the number of exact `"idSnapEntity"` tokens (each entity's
  * own "~type"; the prefab's OWN root "~type" is "idSnapEntityPrefab" -- a different exact token, so this
@@ -1576,6 +1649,42 @@ static HRESULT on_message(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventA
 {
     LPWSTR jp = nullptr;
     if (SUCCEEDED(args->get_WebMessageAsJson(&jp)) && jp) {
+        sh_config_message config_message = sh_extract_config_message(
+            jp, POC_CONFIG_KEY_CAP, POC_CONFIG_VALUE_CAP);
+        if (config_message.kind != SH_CONFIG_MESSAGE_OTHER) {
+            CoTaskMemFree(jp);
+            std::string key, value;
+            bool fields_valid = config_message.fields_valid;
+            if (fields_valid) {
+                key = w_to_utf8(config_message.key);
+                if (config_message.kind == SH_CONFIG_MESSAGE_SET)
+                    value = w_to_utf8(config_message.value_json);
+                fields_valid =
+                    !key.empty() && key.size() <= POC_CONFIG_KEY_CAP &&
+                    key.find('\0') == std::string::npos;
+                if (config_message.kind == SH_CONFIG_MESSAGE_SET)
+                    fields_valid =
+                        fields_valid &&
+                        value.size() <= POC_CONFIG_VALUE_CAP &&
+                        value.find('\0') == std::string::npos;
+            }
+
+            if (config_message.kind == SH_CONFIG_MESSAGE_GET) {
+                if (!fields_valid) key.clear();
+                poc_post_config_value(key);
+            } else {
+                int result = SH_CONFIG_SET_REJECTED;
+                if (fields_valid && g_iface && g_iface->vtbl &&
+                    g_iface->vtbl->config_set_json) {
+                    result = g_iface->vtbl->config_set_json(
+                        g_iface, key.c_str(), value.c_str());
+                }
+                if (!fields_valid) key.clear();
+                poc_post_config_set_result(key, result);
+            }
+            return S_OK;
+        }
+
         std::wstring json(jp); CoTaskMemFree(jp);
         std::wstring cmd;
         if (json_get_wstr(json, L"cmd", cmd)) {
@@ -1789,9 +1898,23 @@ static HRESULT on_message(ICoreWebView2 *, ICoreWebView2WebMessageReceivedEventA
     }
     return S_OK;
 }
-static HRESULT on_nav_completed(ICoreWebView2 *, ICoreWebView2NavigationCompletedEventArgs *)
+static HRESULT on_nav_completed(ICoreWebView2 *,
+                                ICoreWebView2NavigationCompletedEventArgs *args)
 {
-    g_page_loaded = true;   /* the page can receive posted messages from here on (crash poll gates on this) */
+    BOOL success = FALSE;
+    if (!args || FAILED(args->get_IsSuccess(&success)) || !success) {
+        COREWEBVIEW2_WEB_ERROR_STATUS status =
+            COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+        if (args) args->get_WebErrorStatus(&status);
+        poc_logf("NavigationCompleted FAILED status=%lu",
+                 (unsigned long)status);
+        return S_OK;
+    }
+    /* The hidden native host may be shown only after the fully parsed, pre-themed page can receive
+     * messages. This keeps a blank/light controller from becoming the first visible frame. */
+    g_page_loaded = true;
+    g_webview_ready = true;
+    poc_post_config_status();
     poc_send_list();
     return S_OK;
 }
@@ -1812,9 +1935,13 @@ static HRESULT on_controller_created(HRESULT result, ICoreWebView2Controller *co
     EventRegistrationToken tok;
     g_webview->add_WebMessageReceived(Callback<ICoreWebView2WebMessageReceivedEventHandler>(on_message).Get(), &tok);
     g_webview->add_NavigationCompleted(Callback<ICoreWebView2NavigationCompletedEventHandler>(on_nav_completed).Get(), &tok);
-    g_webview->NavigateToString(g_html.c_str());
+    HRESULT navigate = g_webview->NavigateToString(g_html.c_str());
     g_controller->put_IsVisible(TRUE);
-    g_webview_ready = true;
+    if (FAILED(navigate)) {
+        poc_logf("NavigateToString FAILED hr=0x%08lx",
+                 (unsigned long)navigate);
+        return navigate;
+    }
     poc_log("controller ready: navigated to embedded HTML");
     return S_OK;
 }
@@ -2069,6 +2196,16 @@ extern "C" __declspec(dllexport) DWORD WINAPI sh_ui_init(LPVOID param_1)
     int n = MultiByteToWideChar(CP_UTF8, 0, kMockupHtml, -1, nullptr, 0);
     g_html.resize(n > 0 ? n - 1 : 0);
     if (n > 1) MultiByteToWideChar(CP_UTF8, 0, kMockupHtml, -1, &g_html[0], n);
+    {
+        std::string theme_json;
+        int got = poc_config_get_json("theme", theme_json,
+                                      &g_config_status_flags);
+        const char *seed_value = got >= 0 ? theme_json.c_str() : "\"light\"";
+        if (got < 0)
+            poc_log("config: theme unavailable; using light for this session");
+        if (!sh_theme_seed_html(g_html, seed_value))
+            poc_log("config: embedded HTML theme marker missing or duplicated");
+    }
 
     poc_create_window();
     poc_start_webview();

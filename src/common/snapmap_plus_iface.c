@@ -227,6 +227,17 @@ static sh_iface_vtbl g_iface_vtbl_live = {
     /* engine-touch + apply/serialize slots NULL until sh_iface_bind_engine_slots / the heavy bind */
 };
 
+/* --------------------------------------------------------------------- config-slot binder ------
+ * Configuration is engine-independent and must be callable as soon as the frontend starts. Keep this
+ * binder separate from the later engine-slot binder so that binding engine callbacks cannot clear or
+ * race these two append-only cells. */
+void sh_iface_bind_config_slots(const sh_iface_config_slots *slots)
+{
+    if (!slots) return;
+    g_iface_vtbl_live.config_get_json = slots->config_get_json; /* +0x2B0 */
+    g_iface_vtbl_live.config_set_json = slots->config_set_json; /* +0x2B8 */
+}
+
 /* --------------------------------------------------------------------- engine-slot binder ------
  * The backend resolves the editor singleton + the selection/toast engine fns by SIGNATURE, then hands the
  * bodies here once. We patch the SINGLE shared vtable's engine-touch slots in place (only one interface

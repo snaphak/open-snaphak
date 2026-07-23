@@ -311,8 +311,8 @@ func cmdUninstall(f flags) error {
 	removeIfEmpty(filepath.Join(doom, "snaphak"))
 	removeIfEmpty(filepath.Join(doom, "platforms"))
 	// 4) auto-cleanup our app-data folder: the record, the saved token, and the stable snapmap-plus.exe copy.
-	//    The user's modding data (the %LOCALAPPDATA%\snapmap-plus content folders and any old
-	//    %USERPROFILE%\snaphak) is NEVER touched.
+	//    Runtime-owned config.json preferences and the user's modding data (the
+	//    %LOCALAPPDATA%\snapmap-plus content folders and any old %USERPROFILE%\snaphak) are NEVER touched.
 	cleanupAppData()
 	fmt.Println("Done. DOOM restored to vanilla. (Your Snapmap+ modding data was left untouched.)")
 	return nil

@@ -26,6 +26,7 @@ DLL ships.
 |---|---|
 | `src/ui/webview/snapmap_plus_ui_webview.cpp` | The WebView2 host: the `sh_ui_init` entry, a Win32 window, the WebView2 bring-up, the 30 Hz think-loop, and the JS <-> native bridge. |
 | `src/ui/webview/mockup.html` | The UI (HTML/CSS/JS), embedded into the DLL at build time. Self-populates with sample data when opened in a plain browser (a "preview mode", inert in DOOM). |
+| `src/ui/webview/theme_bootstrap.{h,cpp}` | The small pure helper that validates the registered theme JSON and seeds the embedded document's root class before WebView2 navigation. |
 | `src/ui/build.ps1` | Builds `build/webview/snapmap-plus-ui.dll`: fetches the WebView2 SDK from NuGet into `build/` (gitignored), statically links the loader, embeds the HTML. Reuses `sl_exports.cpp` + `snapmap-plus-ui.def`. Invoked by the repo-root `build.ps1` (backend + frontend in lockstep). |
 
 ## Build + deploy
@@ -59,6 +60,7 @@ The frontend holds no engine addresses; it calls the backend only through the vt
 | Class / Inherit autocomplete | `enum_valid_classes` +0x270, `enum_inherits` +0x278 |
 | Camera Origin (X/Y/Z + Lock Position) | `get_editor_vec3` +0x08, `set_editor_vec3` +0x00 |
 | Installed version readout | reads `%LOCALAPPDATA%\snapmap-plus\install.json` (written by the installer) |
+| Persistent settings (currently Light / Dark) | `config_get_json` +0x2B0, `config_set_json` +0x2B8 — registered UTF-8 JSON fragments owned by the backend |
 | Deselect (explicit button, "Select in 3D editor" mode) | `clear_selection` +0x148 |
 | Live "Create from selection (N)" button count | `get_selection` +0x150, polled every ~330 ms independent of the sync checkboxes |
 | Prefabs list, detail pane, delete/rename, folders (create/rename/delete/move) | `resolve_prefab_path` +0xc0 only -- pure Win32 file/directory ops (`FindFirstFileA`, `DeleteFileA`, `MoveFileA`, `CreateDirectoryA`, `RemoveDirectoryA`) on the resolved path. No other engine slot involved, unaffected by the +0xb0 issues below. |
@@ -70,6 +72,26 @@ The frontend holds no engine addresses; it calls the backend only through the vt
 | Save Timeline (commit `componentTimeLine` / `encounterComponent`) | `apply_edit` kind=0 -- the same path Save-to-Decl already uses, id-targeted instead of paste-targeted |
 | Send feedback (the bottom-right "?" dialog) | no engine slot -- the page posts `reportSubmit` with an opaque JSON payload; the host POSTs it to the feedback relay on a short-lived worker thread (WinHTTP, the frontend's only network touch -- see the capability note in `snapmap_plus_ui_webview.cpp`) and answers `reportResult {ok, mode, number}` -> green/red toast. Pipeline: [`feedback.md`](feedback.md) |
 | Crash-report dialog (auto-opens on a recorded crash) | no engine slot -- the host polls `<game>\snapmap-plus\crash\` (~2 s) for a crash record the backend wrote at fault time and posts `crashPending {record, count}`; the page auto-opens the dialog. Send composes the payload host-side (`crashSubmit` -> `category:"crash"`, optional anonymized log tails) and rides the SAME WinHTTP thread + `reportResult` as feedback; `crashDismiss` clears the pending record. Pipeline: [`feedback.md`](feedback.md) |
+
+### Configuration bridge and theme startup
+
+The page never opens `%LOCALAPPDATA%\snapmap-plus\config.json` itself. Production reads and writes use
+generic `configGet {key}` / `configSet {key, valueJson}` WebMessages; the host bounds and decodes those
+fields, calls the backend's registered service through `+0x2B0` / `+0x2B8`, and returns `configValue`,
+`configSetResult`, or the one-shot `configStatus`. Values stay as complete JSON fragments across the
+boundary so a future non-string setting does not need a bespoke message or vtable slot.
+
+Before `NavigateToString`, the host reads `theme`. For `"dark"` it injects `class="dark"` into the
+embedded `<html lang="en">` marker; light and invalid/unavailable values retain the light default. The
+native host starts hidden and can be shown only after a successful `NavigationCompleted`, so the first
+visible frame already has the saved colors and a failed navigation never exposes a blank controller.
+
+Clicking Light or Dark applies immediately, then asks the backend to persist the new value. A rejected or
+session-only result keeps the visual change but warns that it could not be saved. Startup status similarly
+warns when a corrupt file was backed up, a newer schema was left untouched, or the service had to fall
+back to volatile settings. `localStorage` is used **only** when `mockup.html` is opened directly in a
+normal browser (`PREVIEW`); it is never the in-game source of truth. The file format and recovery rules
+are documented in [`architecture.md`](architecture.md#persistent-configuration).
 
 Heavy engine writes (Save, Delete, Select-in-editor) are snapshotted in the JS message callback and
 applied on the next think-loop frame under the loop mutex, keeping them off the re-entrant callback.
@@ -84,6 +106,23 @@ through it).
 
 Newest first. Each dated entry covers one working session's worth of change; the undated **Baseline**
 entry at the bottom is the original POC buildout, before this doc tracked dates per entry.
+
+### 2026-07-22 -- Persistent settings and flash-free theme startup
+
+- **Theme choice now persists through the backend-owned configuration service.** The Light / Dark toggle
+  sends generic `configSet` JSON over the matched-pair interface (`config_get_json` `+0x2B0`,
+  `config_set_json` `+0x2B8`) to `%LOCALAPPDATA%\snapmap-plus\config.json`; startup reads the same
+  registered `theme` value. In-game WebView storage is no longer involved — `localStorage` remains only
+  as a convenience for standalone `PREVIEW` mode.
+- **Dark startup is seeded before navigation.** The host patches the embedded document root from the
+  saved value before `NavigateToString`, keeps the native window hidden until a successful
+  `NavigationCompleted`, and then allows the normal editor-ready gate to show it. A returning dark-theme
+  user gets a dark first frame instead of a light/blank flash.
+- **Failure modes are visible but non-blocking.** The page keeps an unsaved theme for the session and
+  warns on persistence failure; startup reports corrupt-file recovery, a deliberately untouched newer
+  schema, or volatile defaults. Config messages are decoded through a bounded raw-buffer path before
+  UTF-8 conversion. Focused native tests cover the JSON service, pinned ABI, message bounds, HTML bridge
+  contract, and pre-navigation theme seeding.
 
 ### 2026-07-18 -- Status bar: drop the redundant entity count
 
@@ -537,8 +576,9 @@ that doc for the write-up.
   editor, hidden entities skipped). The two are mutually exclusive to avoid a selection feedback loop.
 - Camera Origin bar (always visible): X/Y/Z fields track the live editor camera; "Lock Position" pins it
   (writes the stored vec3 every frame); a committed field edit writes back.
-- Modern light/dark theme with a menu bar toggle (remembered via localStorage); a menu bar with a Settings
-  placeholder for future feature toggles. Native controls (scrollbars, checkboxes) follow the theme.
+- Modern light/dark theme with a menu bar toggle (persisted by the backend-owned `config.json` service in
+  DOOM; `localStorage` is standalone-PREVIEW-only); a menu bar with a Settings placeholder for future
+  feature toggles. Native controls (scrollbars, checkboxes) follow the theme.
 - Installed-version + connection status in the status bar.
 - Browser preview mode: `mockup.html` self-populates with sample data and is fully interactive when
   opened without a WebView2 host (for fast UI iteration); inert in DOOM.
@@ -619,4 +659,5 @@ Genuinely open items only -- fixed bugs and completed work live in the Changelog
 
 Open `src/ui/webview/mockup.html` directly in a browser to see and click through the UI with fake data --
 useful for iterating on layout/behavior without building or deploying. This preview branch only runs when
-there is no WebView2 host, so it has no effect inside DOOM.
+there is no WebView2 host, so it has no effect inside DOOM. The preview remembers its theme in browser
+`localStorage`; production uses the backend-owned `config.json` service instead.

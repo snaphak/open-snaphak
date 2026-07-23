@@ -31,6 +31,7 @@
 #ifndef SNAPMAP_PLUS_IFACE_H
 #define SNAPMAP_PLUS_IFACE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -53,6 +54,18 @@ typedef void (*sh_cmd_handler)(void *ctx, int argc, const char **argv);
  * backend's cached engine state (it ignores `self` in practice -- the engine state is module-static). The
  * heavy serialize/apply slots (+0xc8/+0xd0) stay `void*` placeholders (bound later). */
 struct sh_iface;
+
+#if defined(__cplusplus)
+#define SH_STATIC_ASSERT(expr) static_assert((expr), #expr)
+#elif defined(_MSC_VER)
+#define SH_STATIC_ASSERT_JOIN_(a, b) a##b
+#define SH_STATIC_ASSERT_JOIN(a, b) SH_STATIC_ASSERT_JOIN_(a, b)
+#define SH_STATIC_ASSERT(expr) \
+    typedef char SH_STATIC_ASSERT_JOIN(sh_static_assert_, __LINE__)[(expr) ? 1 : -1]
+#else
+#define SH_STATIC_ASSERT(expr) _Static_assert((expr), #expr)
+#endif
+
 typedef int          (*sh_get_selection_fn)(struct sh_iface *self, int *out_ids, int max);   /* +0x150 */
 typedef void         (*sh_clear_selection_fn)(struct sh_iface *self);                          /* +0x148 */
 typedef void         (*sh_add_to_selection_fn)(struct sh_iface *self, int id);                 /* +0x138 */
@@ -209,6 +222,25 @@ typedef void          (*sh_push_to_stack_fn)(struct sh_iface *self, int index, c
  * backend (the webview host) drive "Clear stack 0" from a context-menu click instead of needing the DOOM
  * console. */
 typedef int           (*sh_clear_stack_fn)(struct sh_iface *self, int index);                      /* +0x2A8 (ext 8) */
+
+/* +0x2B0/+0x2B8 (ext 9/10) backend-owned persistent configuration. Values cross the matched-pair
+ * boundary as complete UTF-8 JSON fragments so future booleans/numbers/objects do not need new ABI
+ * slots. `get` returns the required byte count excluding NUL; a NULL/zero buffer is a size query and an
+ * undersized buffer is untouched. The registry in backend/config.c enforces frontend access. */
+#define SH_CONFIG_SET_VOLATILE  (-1)
+#define SH_CONFIG_SET_REJECTED  0
+#define SH_CONFIG_SET_PERSISTED 1
+
+#define SH_CONFIG_STATUS_RECOVERED_CORRUPT  0x01u
+#define SH_CONFIG_STATUS_UNSUPPORTED_SCHEMA 0x02u
+#define SH_CONFIG_STATUS_VOLATILE           0x04u
+#define SH_CONFIG_STATUS_REPAIRED           0x08u
+
+typedef int (*sh_config_get_json_fn)(struct sh_iface *self, const char *key,
+                                     char *out_json, int out_capacity,
+                                     unsigned int *out_flags);               /* +0x2B0 (ext 9) */
+typedef int (*sh_config_set_json_fn)(struct sh_iface *self, const char *key,
+                                     const char *value_json);                /* +0x2B8 (ext 10) */
 
 /* ------------------------------------------------------------------ heavy apply slots --------
  * The heavy serialize/deserialize/apply slots the SnapStack APPLY-ops (bss/bsi/bsf/bsb/bse/accl/
@@ -389,7 +421,13 @@ typedef struct sh_iface_vtbl {
                                                       * stack `index` (dedup) -- see the typedef comment */
     sh_clear_stack_fn          clear_stack;          /* +0x2A8 (ext 8) empty the backend-owned SnapStack
                                                       * stack `index` -- see the typedef comment */
+    sh_config_get_json_fn      config_get_json;      /* +0x2B0 (ext 9) registered setting -> JSON */
+    sh_config_set_json_fn      config_set_json;      /* +0x2B8 (ext 10) validate + persist JSON */
 } sh_iface_vtbl;
+
+SH_STATIC_ASSERT(offsetof(sh_iface_vtbl, config_get_json) == 0x2B0);
+SH_STATIC_ASSERT(offsetof(sh_iface_vtbl, config_set_json) == 0x2B8);
+SH_STATIC_ASSERT(sizeof(sh_iface_vtbl) == 0x2C0);
 
 /* ------------------------------------------------------------------ the interface object -----------
  * Object layout PINNED to FUN_1800229b1: +0x00 vtable, +0x08 mutex, +0x58 sub-object. The mutex is an
@@ -425,6 +463,9 @@ struct sh_iface {
     uint8_t              mtx[0x50]; /* +0x08..+0x57  the object's _Mtx blob (backend-owned) */
     sh_iface_sub        *sub;       /* +0x58  -> the cmd-map + work-queue sub-object */
 };
+
+SH_STATIC_ASSERT(offsetof(sh_iface, sub) == 0x58);
+SH_STATIC_ASSERT(sizeof(sh_iface) == 0x60);
 
 /* ------------------------------------------------------------------ the CreateThread arg block -----
  * The UI-init entry (ours: sh_ui_init; the OG's: snaphak_ui_init) receives `param_1` = a pointer to this
@@ -465,6 +506,16 @@ int sh_iface_lookup_cmd(sh_iface *self, const char *name, sh_cmd_handler *handle
  * a null interface. This is the producer the OG `sh` dispatcher (0x7620) is. */
 int sh_iface_enqueue_work(sh_iface *self, sh_cmd_handler handler, void *ctx,
                           int argc, const char **argv);
+
+/* ------------------------------------------------------------------ config-slot bind ----------
+ * Kept separate from sh_iface_engine_slots because engine binding happens after the frontend thread is
+ * started. ui_bridge binds these two engine-independent callbacks before LoadLibrary/CreateThread. */
+typedef struct sh_iface_config_slots {
+    sh_config_get_json_fn config_get_json;
+    sh_config_set_json_fn config_set_json;
+} sh_iface_config_slots;
+
+void sh_iface_bind_config_slots(const sh_iface_config_slots *slots);
 
 /* ------------------------------------------------------------------ engine-slot bind ----
  * The backend-provided bodies for the engine-touch vtable slots the SnapStack STORE-ops need. The backend

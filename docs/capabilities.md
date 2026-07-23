@@ -106,12 +106,25 @@ editor (run `sh` in the console if it doesn't auto-open). Full detail: [`webview
 
 | Surface | What it does |
 |---|---|
-| Window shell | The Win32 host window + the manual 30 Hz think-loop; a menu bar with a light/dark theme toggle; the always-visible Camera-Origin bar (X/Y/Z track the live editor camera; "Lock Position" pins it). |
+| Window shell | The Win32 host window + the manual 30 Hz think-loop; a menu bar with a persistent light/dark theme toggle (seeded before the page is first shown, so a saved dark theme never flashes light); the always-visible Camera-Origin bar (X/Y/Z track the live editor camera; "Lock Position" pins it). |
 | Entities tab | A filterable entity list (multi-select, a hidden-entity toggle, two-way editor-selection sync; right-click for Copy ID / Delete / Push to stack 0 / Clear stack 0) plus the Entity State panel: classname / inherit / displayname fields and the Decl Text editor — line numbers, syntax coloring, structural lint, advisory schema checks, a distraction-free focus mode. "Save to Decl" commits the edits in memory. |
 | Prefabs tab | Save and load selection prefabs as JSON files under `%LOCALAPPDATA%\snapmap-plus\prefabs\` — one folder level with rename/delete/drag-between-folders; per-prefab description + tags (stored in a `<name>.meta.json` sidecar; the filter box matches tags across folders); "Load / Place" stages the prefab and the user pastes it with Ctrl+V. |
 | Timelines tab | The list of timeline entities; opening one edits its events and per-event parameters, with reference/decl/enum parameters constrained to valid choices, entity pickers for entity-typed args, and per-event documentation. |
 | Feedback ("?") | The "?" button at the statusbar's right edge opens the Send-feedback dialog: category (bug / feature / incorrect info / other), title, details, optional contact. Sending files it as a labeled issue on this repo's tracker — no GitHub account needed. See the network note below + [`feedback.md`](feedback.md). |
 | Crash reports | When the game hits a serious fault, a crash record is saved locally and the crash-report dialog auto-opens (in-session for a survived fault, next launch otherwise): the error + call stack, an optional description, and an opt-out checkbox to attach anonymized log tails. Sending files a `crash`-labeled issue; repeat crashes at the same location group onto one issue. See [`feedback.md`](feedback.md). |
+
+## Persistent settings
+
+`%LOCALAPPDATA%\snapmap-plus\config.json` holds player preferences shared through the backend-owned
+settings service. The current registered setting is `theme` (`"light"` by default, or `"dark"`); changing
+the Studio-window toggle saves it immediately for the next launch. The runtime creates the file when
+needed, so deleting it resets preferences and the next startup recreates the defaults.
+
+The schema and registry are intentionally extensible: registered values are type-checked and repaired
+individually, while unrecognized root and `settings` members survive normal rewrites. A damaged file is
+backed up and replaced with defaults; a file from a newer schema is left untouched; and an I/O failure
+keeps the choice for the current session while warning that it was not saved. The installer treats this
+file as player data and preserves it across update, uninstall, and reinstall.
 
 ## Network use
 

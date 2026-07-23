@@ -664,6 +664,8 @@
 
   var PREVIEW = !(window.chrome && window.chrome.webview);
   function post(o) { if (!PREVIEW) { window.chrome.webview.postMessage(o); return; } previewHandle(o); }
+  function configGet(key) { post({cmd:'configGet', key:key}); }
+  function configSet(key, value) { post({cmd:'configSet', key:key, valueJson:JSON.stringify(value)}); }
 
   // ---- browser preview: when opened in a plain browser (no DOOM backend), fake the native side so the
   // file is self-demoing and fully interactive. Inert in DOOM (PREVIEW is false there). ----
@@ -2476,7 +2478,25 @@
 
   // ---- messages from native ----
   function onMessage(d) {
-    if (d.kind === 'list') {
+    if (d.kind === 'configValue') {
+      if (d.key === 'theme' && d.result === 1) {
+        try {
+          var savedTheme = JSON.parse(d.valueJson);
+          if (savedTheme === 'light' || savedTheme === 'dark')
+            applyTheme(savedTheme === 'dark', false);
+        } catch (e) {}
+      }
+    } else if (d.kind === 'configSetResult') {
+      if (d.key === 'theme' && d.result !== 1)
+        toast("Theme changed for this session, but couldn't be saved.", 'warn');
+    } else if (d.kind === 'configStatus') {
+      if (d.flags & 1)
+        toast('Your settings file was damaged. Snapmap+ backed it up and restored defaults.', 'warn');
+      else if (d.flags & 2)
+        toast('This settings file is from a newer Snapmap+ version. Update Snapmap+ to save preferences.', 'warn');
+      else if (d.flags & 4)
+        toast("Settings couldn't be saved; changes apply only for this session.", 'warn');
+    } else if (d.kind === 'list') {
       document.getElementById('bridgeDot').className = 'dot ok';
       appVersion = d.version || '';   // rides along in feedback reports
       document.getElementById('verText').textContent = 'Snapmap+ ' + (d.version || '');
@@ -2891,16 +2911,34 @@
   });
   ['camX','camY','camZ'].forEach(function(id){ document.getElementById(id).addEventListener('change', function(){ post({cmd:'camSet', x:camVal('camX'), y:camVal('camY'), z:camVal('camZ')}); }); });
 
-  // theme: light/dark toggle in the menu bar, remembered across sessions.
-  function setTheme(dark) {
+  // Browser storage is a standalone-preview convenience only. In-game, the backend-owned config
+  // service is authoritative and the host has already seeded the root class before navigation.
+  function previewThemeRead() {
+    if (!PREVIEW) return null;
+    try { return localStorage.getItem('sh_theme'); } catch (e) { return null; }
+  }
+  function previewThemeWrite(value) {
+    if (!PREVIEW) return;
+    try { localStorage.setItem('sh_theme', value); }
+    catch (e) { toast("Theme changed for this session, but couldn't be saved.", 'warn'); }
+  }
+  function applyTheme(dark, persist) {
     document.documentElement.classList.toggle('dark', dark);
     document.getElementById('segLight').classList.toggle('on', !dark);
     document.getElementById('segDark').classList.toggle('on', dark);
-    try { localStorage.setItem('sh_theme', dark ? 'dark' : 'light'); } catch (e) {}
+    if (!persist) return;
+    var value = dark ? 'dark' : 'light';
+    if (PREVIEW) previewThemeWrite(value);
+    else configSet('theme', value);
   }
-  document.getElementById('segLight').addEventListener('click', function(){ setTheme(false); });
-  document.getElementById('segDark').addEventListener('click', function(){ setTheme(true); });
-  (function(){ var t = 'light'; try { t = localStorage.getItem('sh_theme') || 'light'; } catch (e) {} setTheme(t === 'dark'); })();
+  document.getElementById('segLight').addEventListener('click', function(){ applyTheme(false, true); });
+  document.getElementById('segDark').addEventListener('click', function(){ applyTheme(true, true); });
+  (function(){
+    var dark = document.documentElement.classList.contains('dark');
+    if (PREVIEW) dark = previewThemeRead() === 'dark';
+    applyTheme(dark, false);
+    if (!PREVIEW) configGet('theme');
+  })();
 
   // frameless window controls: minimize / maximize, drag on the menu bar, resize on the edge handles.
   document.getElementById('winMin').addEventListener('click', function(){ post({cmd:'winMin'}); });

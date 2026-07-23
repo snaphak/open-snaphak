@@ -137,7 +137,7 @@ $incArgs = @(
     "/I`"$objDir`"",
     "/I`"$common`""
 ) -join " "
-$srcArgs = "webview\snapmap_plus_ui_webview.cpp sl_exports.cpp"
+$srcArgs = "webview\snapmap_plus_ui_webview.cpp webview\config_message.cpp webview\theme_bootstrap.cpp sl_exports.cpp"
 $libArgs = @(
     "`"$wvLib`"",
     "ole32.lib", "oleaut32.lib", "shell32.lib", "shlwapi.lib",

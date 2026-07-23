@@ -11,6 +11,12 @@
 #   crash_record_test   -- the crash-record JSON formatter + escaping (pure logic)
 #   report_scrub_test   -- the crash-report log anonymization scrub + tail (pure logic)
 #   dumpmap_path_test   -- sh_dumpmap's output-path resolution (pure logic)
+#   config_json_test    -- bounded JSON grammar, duplicate keys, preservation + serialization
+#   iface_config_test   -- append-only config slot layout + dedicated binder isolation
+#   config_test         -- config lifecycle, validation, recovery, atomic faults + concurrency
+#   config_message_test -- bounded raw WebView config-message extraction
+#   theme_bootstrap_test -- pre-navigation dark-class injection (pure C++ helper)
+#   theme_contract_test -- native/preview theme bridge contract in the embedded HTML source
 # -Doom <unpacked DOOMx64vk.exe>: ALSO the signature-resolver tests, which scan a real
 #   (Steamless-unpacked) DOOM image:
 #   sig_test            -- every engine signature resolves to its known RVA
@@ -39,6 +45,12 @@ $tests = @(
     @{ name = "crash_record_test";  src = 'crash_record_test.c ..\src\fault_shield\crash_record_format.c'; arg = "" }
     @{ name = "report_scrub_test";  src = 'report_scrub_test.c';                                     arg = "" }
     @{ name = "dumpmap_path_test";  src = 'dumpmap_path_test.c';                                     arg = "" }
+    @{ name = "config_json_test";   src = 'config_json_test.c ..\src\backend\config_json.c';         arg = "" }
+    @{ name = "iface_config_test";  src = 'iface_config_test.c ..\src\common\snapmap_plus_iface.c';   arg = "" }
+    @{ name = "config_test";        src = 'config_test.c ..\src\backend\config.c ..\src\backend\config_json.c ..\src\common\snapmap_plus_iface.c'; defs = '/DSH_CONFIG_TESTING'; libs = 'shell32.lib ole32.lib'; arg = "" }
+    @{ name = "config_message_test"; src = 'config_message_test.cpp ..\src\ui\webview\config_message.cpp'; cxx = $true; arg = "" }
+    @{ name = "theme_bootstrap_test"; src = 'theme_bootstrap_test.cpp ..\src\ui\webview\theme_bootstrap.cpp'; cxx = $true; arg = "" }
+    @{ name = "theme_contract_test"; src = 'theme_contract_test.c'; arg = (Join-Path $here '..\src\ui\webview\mockup.html') }
 )
 if ($Doom) {
     if (-not (Test-Path $Doom)) { throw "-Doom path not found: $Doom" }
@@ -50,9 +62,12 @@ if ($Doom) {
 $fail = 0
 foreach ($t in $tests) {
     $exe = Join-Path $obj ($t.name + ".exe")
+    $defs = if ($t.defs) { " $($t.defs)" } else { "" }
+    $cxx  = if ($t.cxx)  { " /EHsc /std:c++17" } else { "" }
+    $libs = if ($t.libs) { " /link $($t.libs)" } else { "" }
     # Output paths are RELATIVE (cwd=tests via cd /d) -- a quoted absolute path with a trailing backslash
     # is the cmd `\"` footgun the build scripts document (cl D8036). obj\ exists (created above); names have no spaces.
-    $cl  = "cl /nologo /O2 /MT /I..\src\backend /I..\src\fault_shield $($t.src) /Fe:obj\$($t.name).exe /Foobj\"
+    $cl  = "cl /nologo /O2 /MT /I..\src\backend /I..\src\common /I..\src\fault_shield /I..\src\ui\webview$cxx$defs $($t.src) /Fe:obj\$($t.name).exe /Foobj\$libs"
     $log = Join-Path $obj ($t.name + ".build.log")
     # vcvars64.bat prints a spurious 'vswhere not recognized' line to stderr; gate on cl's real exit only
     # (the same cmd /c pattern the build scripts use) instead of letting that stderr trip $ErrorActionPreference.
@@ -62,5 +77,5 @@ foreach ($t in $tests) {
     if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $($t.name) (exit $LASTEXITCODE)"; $fail++ }
     else { Write-Host "[ok]   $($t.name)" }
 }
-if ($fail -gt 0) { Write-Host ""; Write-Host "$fail C test(s) FAILED"; exit 1 }
-Write-Host ""; Write-Host "all C tests passed ($($tests.Count))"
+if ($fail -gt 0) { Write-Host ""; Write-Host "$fail native test(s) FAILED"; exit 1 }
+Write-Host ""; Write-Host "all native tests passed ($($tests.Count))"

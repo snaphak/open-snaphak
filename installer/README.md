@@ -75,14 +75,22 @@ stable release has been published yet, they fall back to the newest beta (and sa
   overrides under `%USERPROFILE%\snaphak` are user data — they are **never** touched, and install copies
   them forward into Snapmap+'s own data folder (`%LOCALAPPDATA%\snapmap-plus`).
 - Records the install (files placed + backups taken) in `%LOCALAPPDATA%\snapmap-plus\install.json`.
+- Leaves `%LOCALAPPDATA%\snapmap-plus\config.json` entirely to the runtime. The backend creates it on the
+  first Snapmap+ startup after install; install, update, uninstall, and reinstall never generate, parse,
+  rewrite, or delete it. Deleting it yourself is the supported preference reset — the runtime recreates
+  defaults the next time it starts.
 - **`uninstall`** reverses *exactly* that record: removes the files it placed, restores the backups, and cleans
   the dirs it created **only if they're empty** — a pre-existing `platforms/` or other content is left intact. Your
-  modding data (overrides / prefabs / rawmaps) is **never** touched.
+  player data (`config.json`, overrides, prefabs, rawmaps) is **never** touched.
+
+The Go tests include a full install → update → uninstall → reinstall regression that writes a
+forward-compatible `config.json` and verifies its bytes remain unchanged through every installer action.
 
 ## Releases & channels
 
 `install` / `update` download from **`doom-snapmap/snapmap-plus`** releases. `snapmap-plus.exe` installs itself to
-`%LOCALAPPDATA%\snapmap-plus\` (with its `install.json` record); **double-clicking it** (no args) opens a
+`%LOCALAPPDATA%\snapmap-plus\` (with its installer-owned `install.json` record; the runtime-owned
+`config.json` may live alongside it); **double-clicking it** (no args) opens a
 status-aware interactive prompt: not installed → Enter installs (auto-detect DOOM → confirm); installed
 with a newer release out → an update notice, Enter updates; and a `snapmap-plus>` prompt takes every command
 above (with flags), so update / uninstall / changelog work without a terminal or PATH. `update` also

@@ -80,13 +80,15 @@ A few practical notes:
   overrides carry straight over: anything in the old `%USERPROFILE%\snaphak` folder is copied into
   Snapmap+'s own data folder (`%LOCALAPPDATA%\snapmap-plus`), and the old folder itself is never touched.
 - **Uninstalling:** `snapmap-plus uninstall` restores your DOOM folder to exactly what it was before.
-  Your own Snapmap+ data (prefabs, rawmaps, overrides under `%LOCALAPPDATA%\snapmap-plus`) is left
-  untouched.
+  Your own Snapmap+ data (`config.json`, prefabs, rawmaps, overrides under
+  `%LOCALAPPDATA%\snapmap-plus`) is left untouched.
 - `snapmap-plus help` in a terminal lists everything else: `status`, `changelog`, `version`.
 
 What actually lands in your DOOM folder is small: `XINPUT1_3.dll` in the folder itself, and
 `snapmap-plus-ui.dll` inside a `snapmap-plus\` subfolder. Everything is hash-verified before a single
-file is touched, and the installer keeps a record so uninstall reverses exactly what it placed.
+file is touched, and the installer keeps a record so uninstall reverses exactly what it placed. Your
+settings are separate: Snapmap+ creates `%LOCALAPPDATA%\snapmap-plus\config.json` the first time it
+starts, rather than shipping one in the installer.
 
 ---
 
@@ -115,7 +117,14 @@ that stay visible no matter which tab you're on:
 ![Snapmap+ full window: title bar, tabs, Camera Origin, Light/Dark toggle](images/window-tour.png)
 
 **Light / Dark** (top menu bar) switches the panel's whole color scheme. It doesn't follow your system
-theme automatically — pick whichever you prefer.
+theme automatically — pick whichever you prefer. Snapmap+ remembers the choice and applies it before the
+window first appears on later launches, so a saved dark theme does not flash light while loading.
+
+`config.json` is safe to leave alone. If you deliberately delete it, Snapmap+ treats that as **Reset
+preferences** and recreates the default light setting on the next startup. If the file is damaged,
+Snapmap+ keeps a timestamped `.corrupt.json` backup, restores defaults, and tells you once; if it cannot
+save, your new theme still works for the current session and the window explains that it was not
+remembered. Updates, uninstall, and reinstall preserve the file.
 
 **Camera Origin** (top-right) shows your editor camera's live X/Y/Z position, and updates continuously
 while you move around — handy for finding coordinates to paste into a property. Check **Lock** to pin the

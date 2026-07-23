@@ -7,7 +7,8 @@ import (
 )
 
 // appDataDir is %LOCALAPPDATA%\snapmap-plus -- the one consolidated app-data folder: the install record, the
-// token, a stable copy of the installer exe, AND the user's modding content (overrides / prefabs / strings).
+// token, a stable copy of the installer exe, runtime-owned config.json preferences, AND the user's modding
+// content (overrides / prefabs / strings). The installer never owns or rewrites config.json.
 // Returns "" if LOCALAPPDATA is not set. (Pre-rename installs used %LOCALAPPDATA%\open-snaphak; loadRecord /
 // resolveToken / migrateUserData fold that older location forward.)
 func appDataDir() string {
@@ -57,8 +58,9 @@ func selfInstall() {
 }
 
 // cleanupAppData removes the install record, the saved token, and the stable installer-exe copy, then the folder
-// itself if empty. Called on uninstall. The user's modding content (overrides / prefabs / strings) lives in this
-// same folder and is NEVER removed -- so if any content is present, the folder is left in place with it intact.
+// itself if empty. Called on uninstall. Runtime-owned config.json and the user's modding content (overrides /
+// prefabs / strings) live in this same folder and are NEVER removed -- so if any of them is present, the folder
+// is left in place with it intact.
 // Can't delete the exe if you're running THAT copy -- left in place then.
 func cleanupAppData() {
 	dir := appDataDir()

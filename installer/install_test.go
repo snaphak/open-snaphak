@@ -135,6 +135,49 @@ func TestUpdateDoesNotBackUpOwnDLL(t *testing.T) {
 	}
 }
 
+// TestRuntimeConfigSurvivesInstallerLifecycle locks the ownership boundary between the runtime and
+// installer: config.json is player preference data, never an installed payload or cleanup target.
+func TestRuntimeConfigSurvivesInstallerLifecycle(t *testing.T) {
+	tmp := t.TempDir()
+	doom := filepath.Join(tmp, "DOOM")
+	localAppData := filepath.Join(tmp, "appdata")
+	mkdirAll(t, doom)
+	t.Setenv("LOCALAPPDATA", localAppData)
+	t.Setenv("USERPROFILE", filepath.Join(tmp, "profile"))
+	writeF(t, filepath.Join(doom, "DOOMx64vk.exe"), "exe")
+
+	if err := cmdInstall(flags{doom: doom, local: synthDist(t, tmp, "config-v1")}); err != nil {
+		t.Fatalf("install v1: %v", err)
+	}
+	configPath := filepath.Join(localAppData, "snapmap-plus", "config.json")
+	configBytes := `{"schema_version":1,"settings":{"theme":"dark","future_setting":[1,true,null]},"future_root":{"keep":"exact"}}`
+	writeF(t, configPath, configBytes)
+	assertConfig := func(stage string) {
+		t.Helper()
+		if got := readF(t, configPath); got != configBytes {
+			t.Fatalf("%s changed runtime config:\n got: %q\nwant: %q", stage, got, configBytes)
+		}
+	}
+
+	if err := cmdUpdate(flags{local: synthDist(t, tmp, "config-v2"), noSelf: true}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	assertConfig("update")
+
+	if err := cmdUninstall(flags{}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if exists(filepath.Join(localAppData, "snapmap-plus", "install.json")) {
+		t.Error("uninstall should remove installer-owned install.json")
+	}
+	assertConfig("uninstall")
+
+	if err := cmdInstall(flags{doom: doom, local: synthDist(t, tmp, "config-v3")}); err != nil {
+		t.Fatalf("reinstall: %v", err)
+	}
+	assertConfig("reinstall")
+}
+
 // synthDist writes a synthetic dist/ (the 3 overlay files + a matching MANIFEST.sha256) whose content varies by
 // tag, so installing two different tags exercises the update path (distinct bytes -> distinct hashes).
 func synthDist(t *testing.T, dir, tag string) string {

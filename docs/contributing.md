@@ -129,16 +129,26 @@ go test ./...
 cd ..
 ```
 
-**The C unit tests:**
+**The native unit tests:**
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1
 ```
 
-By default this compiles and runs the two **self-contained** tests (no game needed):
+By default this compiles and runs eleven **self-contained native tests** (no game needed):
 
 - **`shield_format_test`** — the fault-record string formatter (pure logic).
 - **`hook_test`** — the inline-detour installer, exercised on a hand-laid scratch stub.
+- **`crash_record_test`** — crash-record JSON formatting and escaping.
+- **`report_scrub_test`** — report-log anonymization and bounded tail selection.
+- **`dumpmap_path_test`** — `sh_dumpmap` path validation and output-name construction.
+- **`config_json_test`** — bounded UTF-8 JSON parsing, duplicate-key rejection, mutation, and serialization.
+- **`iface_config_test`** — the pinned `+0x2B0` / `+0x2B8` config ABI and callback binding.
+- **`config_test`** — config creation, validation/repair/recovery, preservation, atomic-failure behavior,
+  deletion reset, external/process writers, and the registered service.
+- **`config_message_test`** — bounded raw WebView config-message extraction before UTF-8 conversion.
+- **`theme_bootstrap_test`** — pre-navigation root-class seeding for a saved dark theme.
+- **`theme_contract_test`** — the HTML config-message contract and PREVIEW-only browser storage.
 
 Two more tests scan a **real DOOM image** — a `DOOMx64vk.exe` that's been unpacked from its Steam DRM wrapper
 (e.g. with Steamless). Run them only if you're touching the signature resolver (`src/backend/signatures.c`):
@@ -153,7 +163,7 @@ A third test, `xinput_ordinal_test.c`, is a **runtime** cross-check of the XInpu
 a built DLL and calls its exports by ordinal. CI verifies that same invariant *statically* with `dumpbin` (the
 "XInput ordinal parity" step), so you normally don't need to run it by hand.
 
-CI runs the self-contained C tests and the installer tests on every PR; the DOOM-image tests are local-only
+CI runs the eleven self-contained native tests and the installer tests on every PR; the DOOM-image tests are local-only
 (CI has no game image).
 
 ## 8. The pull-request workflow
@@ -171,7 +181,7 @@ CI runs the self-contained C tests and the installer tests on every PR; the DOOM
 7. **Push** to your fork and open a **pull request against `main`**.
 8. The **CI gate** runs automatically, as two parallel jobs: a security scan (no-new-binaries ·
    capability-surface scan · gitleaks); and the build (`build.ps1` / `package.ps1`, a bundle guard that
-   asserts the overlay stays the lean 2-file set, XInput ordinal parity, the C unit tests, and the installer's
+   asserts the overlay stays the lean 2-file set, XInput ordinal parity, the native unit tests, and the installer's
    `gofmt` / `vet` / `test`). It runs in a **secretless** sandbox — fork PRs get a read-only token and zero
    repo secrets.
 9. A **maintainer reviews** and merges (changes under `.github/`, `*.ps1`, and `installer/` are
@@ -187,7 +197,7 @@ behavior change with stale docs will be sent back. Use this map:
 |---|---|
 | a console command, cvar, SnapStack op, or a Studio-window feature (`src/backend/`, `src/ui/`) | [`docs/capabilities.md`](capabilities.md) — the feature inventory |
 | the frontend UI itself (`src/ui/webview/` — the host or `mockup.html`) | [`docs/webview-ui.md`](webview-ui.md) — its reference sections + a dated Changelog entry |
-| the object model, the think-loop, the interface vtable, or the backend↔frontend boundary | [`docs/architecture.md`](architecture.md) |
+| the object model, the think-loop, the interface vtable, the persistent-settings registry, or the backend↔frontend boundary | [`docs/architecture.md`](architecture.md) |
 | a deliberately-reproduced original quirk, or a sanctioned divergence | [`docs/fidelity.md`](fidelity.md) |
 | a correctness bugfix in the shared `src/backend/` engine-call layer (not a fidelity divergence -- our own code was wrong) | [`docs/backend-changes.md`](backend-changes.md) |
 | the shipped file set / what's deliberately dropped (`package.ps1`) | [`docs/packaging.md`](packaging.md) |
@@ -214,12 +224,12 @@ release. **Do not open a public issue for a security problem.** Use GitHub's **p
 
 | Path | What |
 |---|---|
-| `src/backend/` | the backend DLL (`XINPUT1_3.dll`): the hook layer, console commands, cvars, cvar-unlock, the resident fault-shield |
+| `src/backend/` | the backend DLL (`XINPUT1_3.dll`): the hook layer, console commands, cvars, persistent configuration, cvar-unlock, the resident fault-shield |
 | `src/ui/` | the frontend DLL (`snapmap-plus-ui.dll`): the WebView2 Snapmap+ window -- `webview/` holds the host (`snapmap_plus_ui_webview.cpp`) + the UI (`mockup.html`) |
 | `src/fault_shield/` | the recover-in-place vectored-exception fault shield (compiled into the backend) |
 | `src/common/` | the shared backend↔frontend interface ABI (`snapmap_plus_iface.h`) |
 | `installer/` | `snapmap-plus.exe` — the Go install / update / uninstall CLI |
-| `tests/` | the C unit tests + `run-tests.ps1` |
+| `tests/` | the native unit tests + `run-tests.ps1` |
 | `docs/` | architecture · capabilities · fidelity · packaging · webview-ui · backend-changes · this guide |
 | `build.ps1` | compile the DLLs → `build/` (backend + frontend; `-BackendOnly` for backend alone) |
 | `package.ps1` | assemble the deployable overlay → `dist/` (the two clone DLLs) |

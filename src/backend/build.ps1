@@ -48,6 +48,7 @@ param(
     [string[]]$Sources = @("dllmain.c", "signatures.c", "hook.c", "smoke.c",
                            "rawmap.c", "palette_guard.c", "strids.c",
                            "overrides.c", "cvars.c", "commands.c", "clipboard.c",
+                           "config.c", "config_json.c",
                            "entity.c", "typeinfo.c", "patch.c", "algo.c", "target_any.c", "wiring_cleandirect.c", "ui_bridge.c",
                            "iface_engine.c", "apply_engine.c", "../common/snapmap_plus_iface.c",
                            # backend-hosted SnapStack (snapstack.c + json_patch.c): the `sh psel`/`sh acctargets`/
@@ -109,11 +110,12 @@ $implib  = $Out -replace '\.dll$', '.lib'   # import lib + .exp -> build\obj\bac
 # /I..\common : the shared UI-interface ABI header (snapmap_plus_iface.h) the ui-bridge + the common factory
 # (../common/snapmap_plus_iface.c) include. The interface object the backend creates here is the matched pair
 # the frontend snapmap-plus-ui.dll consumes.
-# shell32.lib: SHGetFolderPathA -- the prefab path resolver (+0xc0, OG FUN_18000ce50).
+# shell32.lib: known-folder APIs used by runtime data paths. ole32.lib: CoTaskMemFree for
+# SHGetKnownFolderPath's config-service allocation.
 # Output goes to the TOP-LEVEL repo build\ (out of src\), via paths RELATIVE to cwd=$here so the
 # quoted-trailing-backslash cmd footgun (see above) is avoided: ..\..\ from src\backend\ is the repo root.
 # /DEF:xinput1_3.def + /I..\common stay cwd-relative (load-bearing -- the .def pins the XInput ordinals).
-$cl = "cl /nologo /LD /O2 /W3 /MT $defs /Fo..\..\build\obj\backend\ /I..\common $srcArgs /Fe:..\..\build\$Out /link /DEF:xinput1_3.def /IMPLIB:..\..\build\obj\backend\$implib shell32.lib"
+$cl = "cl /nologo /LD /O2 /W3 /MT $defs /Fo..\..\build\obj\backend\ /I..\common $srcArgs /Fe:..\..\build\$Out /link /DEF:xinput1_3.def /IMPLIB:..\..\build\obj\backend\$implib shell32.lib ole32.lib"
 
 $cmd = "cd /d `"$here`" && `"$vcvars`" && $cl"
 # vcvars64.bat emits a spurious "'vswhere.exe' is not recognized" line on stderr (it probes a bare-PATH
